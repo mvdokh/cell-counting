@@ -3,6 +3,7 @@
     python -m slicereg open  C:\\path\\to\\slide.tif     # detect, crop, align, count
     python -m slicereg export C:\\path\\to\\slide_project
     python -m slicereg render C:\\path\\to\\slide_project
+    python -m slicereg deepslice-setup                  # one-off, for DeepSlice alignment
 """
 
 from __future__ import annotations
@@ -44,7 +45,17 @@ def main(argv=None) -> None:
                           help="hide the transparent whole-brain outline")
     p_render.add_argument("--screenshot", help="save a PNG instead of opening a window")
 
+    sub.add_parser("deepslice-setup",
+                   help="install DeepSlice (and TensorFlow) in its own environment, "
+                        "for the 'Predict alignment with DeepSlice' button")
+
     args = parser.parse_args(argv)
+    if args.cmd == "deepslice-setup":
+        from .deepslice import ENV_DIR, setup
+
+        setup()
+        print(f"DeepSlice is ready ({ENV_DIR}).")
+        return
     from .io import Project
 
     if args.cmd == "open":

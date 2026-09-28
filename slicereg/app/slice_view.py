@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import json
+
 import cv2
 import numpy as np
 import pandas as pd
 from napari.layers.points._points_constants import Mode as PointsMode
 from napari.layers.points._points_mouse_bindings import add as add_point_on_click
 from napari.utils.colormaps import DirectLabelColormap
-from qtpy.QtCore import QTimer
+from qtpy.QtCore import QProcess, QTimer
 from qtpy.QtWidgets import (QHBoxLayout, QLabel, QMessageBox, QPushButton, QTabWidget,
                             QVBoxLayout, QWidget)
 
@@ -58,6 +60,11 @@ class SliceView:
         self._smooth_timer = QTimer()
         self._smooth_timer.setSingleShot(True)
         self._smooth_timer.timeout.connect(self._refresh_smooth_outline)
+        self._active = False
+        self._deepslice = None
+        self._deepslice_running = False
+        self._deepslice_log: list[str] = []
+        self._pre_deepslice: Alignment | None = None
 
     @property
     def display(self) -> dict:
@@ -144,10 +151,14 @@ class SliceView:
         self._refresh_smooth_outline()
         self._on_tab(self.tabs.currentIndex())
         self.dirty = False
+        self._active = True
 
     def deactivate(self) -> None:
+        self._active = False
         self._timer.stop()
         self._smooth_timer.stop()
+        if self._deepslice_running:
+            self._deepslice.kill()
         if self._on_mouse_move in self.viewer.mouse_move_callbacks:
             self.viewer.mouse_move_callbacks.remove(self._on_mouse_move)
 
@@ -293,6 +304,89 @@ class SliceView:
         self.alignment = new
         self.align_widget.load(new)
         self.alignment_changed()
+
+    def run_deepslice(self, invert: bool = False) -> None:
+        from .. import deepslice
+
+        if not deepslice.supports_atlas(self.atlas.name):
+            QMessageBox.information(
+                None, "DeepSlice", "DeepSlice only predicts positions in the Allen mouse atlas "
+                f"(allen_mouse_*); this project uses {self.atlas.name}.")
+            return
+        if not deepslice.is_installed():
+            QMessageBox.information(
+                None, "DeepSlice is not installed",
+                "DeepSlice runs in its own Python environment. Set it up once from a "
+                "terminal (with the slicereg environment active):\n\n"
+                "    slicereg deepslice-setup\n\n"
+                "This downloads TensorFlow, DeepSlice and its model weights (~2 GB).")
+            return
+        if self._deepslice_running:
+            return
+        d = self.project.slice_dir(self.sid)
+        png, out = d / "deepslice_input.png", d / "deepslice.json"
+        out.unlink(missing_ok=True)
+        deepslice.write_input_image(self.preview, png, invert)
+        cmd = deepslice.worker_command(png, out)
+        proc = QProcess()
+        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        proc.readyReadStandardOutput.connect(lambda: self._on_deepslice_output(proc))
+        proc.finished.connect(lambda code, _status: self._on_deepslice_finished(code, out))
+        proc.errorOccurred.connect(
+            lambda err: err == QProcess.ProcessError.FailedToStart
+            and self._on_deepslice_finished(-1, out))
+        # Kept referenced after it finishes: dropping it inside its own signal can crash Qt.
+        self._deepslice = proc
+        self._deepslice_running = True
+        self._deepslice_log = []
+        self.align_widget.set_deepslice_running(True)
+        self.align_widget.deepslice_status.setText("Starting DeepSlice...")
+        proc.start(cmd[0], cmd[1:])
+
+    def _on_deepslice_output(self, proc) -> None:
+        text = bytes(proc.readAllStandardOutput()).decode(errors="replace")
+        self._deepslice_log.append(text)
+        lines = [ln.strip() for ln in text.replace("\r", "\n").splitlines()
+                 if ln.strip() and "\x1b" not in ln and "WARNING" not in ln]
+        if lines and self._active:
+            self.align_widget.deepslice_status.setText(lines[-1][:200])
+
+    def _on_deepslice_finished(self, code: int, out) -> None:
+        from .. import deepslice
+
+        self._deepslice_running = False
+        if not self._active:
+            return
+        self.align_widget.set_deepslice_running(False)
+        status = self.align_widget.deepslice_status
+        if code != 0 or not out.exists():
+            status.setText("DeepSlice failed, see the terminal for details.")
+            print("".join(self._deepslice_log)[-5000:])
+            return
+        anchoring = json.loads(out.read_text())
+        new = deepslice.anchoring_to_alignment(anchoring, self.atlas.name,
+                                               self.atlas.plane_size_um, self._image_size())
+        old = self.alignment
+        if new.flip != old.flip:
+            new.flip, new.yaw_deg = old.flip, -new.yaw_deg
+        self._pre_deepslice = old
+        self.alignment = new
+        self.align_widget.load(new)
+        self._sync_landmark_points()
+        self.alignment_changed()
+        self.align_widget.deepslice_undo.setEnabled(True)
+        status.setText(f"DeepSlice: AP {new.ap_um:.0f} um, pitch {new.pitch_deg:+.1f}, "
+                       f"yaw {new.yaw_deg:+.1f} deg. Refine by hand, then Save.")
+
+    def undo_deepslice(self) -> None:
+        if self._pre_deepslice is None:
+            return
+        self.alignment, self._pre_deepslice = self._pre_deepslice, None
+        self.align_widget.load(self.alignment)
+        self._sync_landmark_points()
+        self.alignment_changed()
+        self.align_widget.deepslice_undo.setEnabled(False)
+        self.align_widget.deepslice_status.setText("Restored the alignment from before DeepSlice.")
 
     def set_landmark_mode(self, on: bool) -> None:
         self.landmark_mode = on

@@ -32,6 +32,18 @@ The last step installs the `slicereg` command. Without it you can use
 The first time a project is aligned, the BrainGlobe atlas (`allen_mouse_25um` by
 default) is downloaded to `~/.brainglobe`, which needs an internet connection.
 
+### Optional: DeepSlice
+
+[DeepSlice](https://github.com/PolarBean/DeepSlice) predicts a section's position in
+the Allen mouse atlas, which gives a quick initial alignment to refine by hand. It
+needs TensorFlow and older versions of some packages, so it gets its own environment
+(`.venv-deepslice` in the repository folder, about 2 GB including model weights). With
+the main environment active, run once:
+
+```powershell
+slicereg deepslice-setup
+```
+
 ## Launching
 
 Activate the environment first (`.\.venv\Scripts\Activate.ps1`), then open a slide scan:
@@ -70,9 +82,15 @@ Options for `open`:
    zoomed together with the section; hovering either panel shows a crosshair at the
    matching spot in the other. These settings are saved per project.
 5. **1. Align to atlas** tab: set the AP position, tilt, rotation, scale and centre
-   until the atlas outline matches the tissue. *Auto-fit to tissue outline* gives a
-   starting point; Shift+drag moves the atlas. *Landmark mode* lets you drag atlas
-   features onto matching tissue features to warp the fit.
+   until the atlas outline matches the tissue. *Predict alignment with DeepSlice*
+   (Allen mouse atlases only, see [Optional: DeepSlice](#optional-deepslice)) fills
+   all of these in from the section image in about 10 s; your *Mirror atlas
+   left/right* setting is kept, since DeepSlice can't tell the hemispheres apart. If
+   the guess is off on a fluorescence image, tick *Invert image* and run it again;
+   *Undo DeepSlice* restores the previous alignment and landmarks. *Auto-fit to
+   tissue outline* is a simpler starting point that only fits scale and centre;
+   Shift+drag moves the atlas. *Landmark mode* lets you drag atlas features onto
+   matching tissue features to warp the fit.
 6. **2. Count cells** tab: choose or create a cell type, then click each cell in
    *Add cells* mode; Shift+drag moves the view without adding a cell, and the scroll
    wheel zooms. Use *Select / delete* to remove marks. The *Cell marker size*

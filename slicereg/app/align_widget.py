@@ -67,6 +67,22 @@ class AlignWidget(QWidget):
         self.spacing.valueChanged.connect(self._on_spacing)
         form.addRow("Section spacing", self.spacing)
 
+        self.deepslice = QPushButton("Predict alignment with DeepSlice")
+        self.deepslice.setToolTip(
+            "Run DeepSlice on this section to guess its AP position, tilt, rotation and "
+            "scale in the Allen atlas. Takes ~10-30 s; refine the result by hand afterwards.")
+        self.deepslice_invert = QCheckBox("Invert image (dark tissue on light background)")
+        self.deepslice_invert.setToolTip(
+            "DeepSlice was trained mostly on brightfield sections. If the prediction is off "
+            "for fluorescence images, try again with this ticked.")
+        self.deepslice_undo = QPushButton("Undo DeepSlice")
+        self.deepslice_undo.setEnabled(False)
+        self.deepslice_status = QLabel("")
+        self.deepslice_status.setWordWrap(True)
+        ds_row = QHBoxLayout()
+        ds_row.addWidget(self.deepslice, 1)
+        ds_row.addWidget(self.deepslice_undo)
+
         self.autofit = QPushButton("Auto-fit to tissue outline")
         self.landmark_mode = QPushButton("Landmark mode (warp)")
         self.landmark_mode.setCheckable(True)
@@ -83,6 +99,9 @@ class AlignWidget(QWidget):
         help_text.setWordWrap(True)
 
         lay = QVBoxLayout(self)
+        lay.addLayout(ds_row)
+        lay.addWidget(self.deepslice_invert)
+        lay.addWidget(self.deepslice_status)
         lay.addLayout(form)
         lay.addWidget(self.autofit)
         lay.addLayout(row)
@@ -94,6 +113,9 @@ class AlignWidget(QWidget):
         for spin in self.spins.values():
             spin.valueChanged.connect(self._on_edit)
         self.flip.toggled.connect(self._on_edit)
+        self.deepslice.clicked.connect(
+            lambda: view.run_deepslice(self.deepslice_invert.isChecked()))
+        self.deepslice_undo.clicked.connect(view.undo_deepslice)
         self.autofit.clicked.connect(view.auto_fit)
         self.landmark_mode.toggled.connect(view.set_landmark_mode)
         self.clear_landmarks.clicked.connect(view.clear_landmarks)
@@ -109,6 +131,11 @@ class AlignWidget(QWidget):
         self._last_scale = (al.scale_x, al.scale_y)
         self._sync_ap_labels(al.ap_um)
         self.n_landmarks.setText(f"{len(al.landmarks)} landmarks")
+
+    def set_deepslice_running(self, running: bool) -> None:
+        self.deepslice.setEnabled(not running)
+        self.deepslice.setText("DeepSlice running..." if running
+                               else "Predict alignment with DeepSlice")
 
     def _on_spacing(self, value: float) -> None:
         self.view.project.data["section_spacing_um"] = float(value)
