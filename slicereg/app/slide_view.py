@@ -137,6 +137,11 @@ class SlideView:
         self.shapes.features = feats
         self.shapes.refresh_text()
         self.list.clear()
+        if not self.project.slices:
+            item = QListWidgetItem("No sections saved yet - click 'Crop & save sections', "
+                                   "or double-click a box to crop and open it.")
+            item.setFlags(Qt.NoItemFlags)
+            self.list.addItem(item)
         for s in self.project.slices:
             item = QListWidgetItem(self._describe(s["id"]))
             item.setData(Qt.UserRole, s["id"])
@@ -191,26 +196,46 @@ class SlideView:
         self._refresh_labels()
         self.viewer.status = f"Saved {len(self.project.slices)} sections to {self.project.root}"
 
+    def _has_unsaved_boxes(self) -> bool:
+        saved = [(s["id"], s["bbox"]) for s in self.project.slices]
+        if self._current_entries() != saved:
+            return True
+        return not all(self.project.status(sid)["cropped"] for sid, _ in saved)
+
     def _open(self, sid: int) -> None:
-        if not self.project.status(sid)["cropped"]:
-            QMessageBox.information(None, "Not cropped", "Click 'Crop & save sections' first.")
-            return
         QTimer.singleShot(0, lambda: self.app.open_slice(sid))
 
-    def _on_open_selected(self) -> None:
-        item = self.list.currentItem()
-        if item is not None:
-            self._open(item.data(Qt.UserRole))
-
-    def _on_double_click(self, viewer, event) -> None:
-        if self.shapes is None or self.shapes.mode.startswith("add"):
-            return
-        y, x = event.position[-2:]
+    def _open_at(self, y: float, x: float) -> None:
+        """Open the section whose box contains (y, x), cropping unsaved boxes first."""
+        if self._has_unsaved_boxes():
+            self._on_crop()
         for s in self.project.slices:
             x0, y0, x1, y1 = s["bbox"]
             if x0 <= x < x1 and y0 <= y < y1:
                 self._open(s["id"])
                 return
+
+    def _on_open_selected(self) -> None:
+        selected = sorted(self.shapes.selected_data)
+        if selected:
+            y, x = self.shapes.data[selected[0]].mean(axis=0)
+            self._open_at(y, x)
+            return
+        item = self.list.currentItem()
+        if item is not None and item.data(Qt.UserRole) is not None:
+            if self._has_unsaved_boxes():
+                self._on_crop()
+            self._open(item.data(Qt.UserRole))
+            return
+        QMessageBox.information(None, "Nothing selected",
+                                "Click a section box on the slide (select tool) or an entry "
+                                "in the list first, or just double-click a section.")
+
+    def _on_double_click(self, viewer, event) -> None:
+        if self.shapes is None or self.shapes.mode.startswith("add"):
+            return
+        y, x = event.position[-2:]
+        QTimer.singleShot(0, lambda: self._open_at(y, x))
 
     def _on_export(self) -> None:
         summary = export_project(self.project)
