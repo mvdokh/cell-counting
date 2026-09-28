@@ -43,8 +43,7 @@ class AlignWidget(QWidget):
         self.ap_slider.valueChanged.connect(lambda v: self.spins["ap_um"].setValue(v * step))
         self._step = step
         self.bregma = QLabel()
-        self.lock = QCheckBox("Lock aspect ratio")
-        self.lock.setChecked(True)
+        self.lock = QCheckBox("Lock aspect ratio (scale X and Y together)")
         self.flip = QCheckBox("Mirror atlas left/right")
 
         form = QFormLayout()
