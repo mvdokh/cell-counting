@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: slicereg
+Version: 0.1.0
+Summary: Crop brain sections from slide scans, align them to the Allen CCF, and count cells
+Requires-Python: >=3.10

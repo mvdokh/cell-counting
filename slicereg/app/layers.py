@@ -3,8 +3,26 @@
 from __future__ import annotations
 
 import numpy as np
+from napari.utils.colormaps import Colormap
 
 from ..export import CELL_COLORS  # noqa: F401
+
+DISPLAY_DEFAULTS = {
+    "outlines": True,
+    "regions": False,
+    "smooth": True,
+    "sigma": 1.0,
+    "width": 2.0,
+    "color": [1.0, 1.0, 1.0],
+    "side_by_side": False,
+    "cell_size": None,
+}
+
+
+def outline_colormap(rgb) -> Colormap:
+    """Transparent -> ``rgb`` colormap for the (0..1) outline canvas."""
+    r, g, b = (float(v) for v in rgb)
+    return Colormap([[0.0, 0.0, 0.0, 0.0], [r, g, b, 1.0]])
 
 CHANNEL_COLORMAPS = {
     1: ["gray"],

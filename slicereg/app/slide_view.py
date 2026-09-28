@@ -10,9 +10,11 @@ from qtpy.QtCore import Qt, QTimer
 from qtpy.QtWidgets import (QApplication, QLabel, QListWidget, QListWidgetItem, QMessageBox,
                             QProgressDialog, QPushButton, QVBoxLayout, QWidget)
 
+from ..atlas import atlas_structures
 from ..detect import detect_sections
-from ..export import export_project
+from ..export import collect_cells, export_project
 from .layers import add_channels
+from .render_dialog import RenderDialog
 
 
 def _rect(b):
@@ -242,5 +244,13 @@ class SlideView:
         QMessageBox.information(None, "Export", summary)
 
     def _on_render(self) -> None:
-        subprocess.Popen([sys.executable, "-m", "slicereg", "render", str(self.project.root)])
+        cells = collect_cells(self.project)
+        dlg = RenderDialog(self.project, atlas_structures(self.project.data["atlas"]),
+                           list(dict.fromkeys(cells["cell_type"])),
+                           parent=getattr(self.viewer.window, "_qt_window", None))
+        if not dlg.exec():
+            return
+        dlg.save()
+        subprocess.Popen([sys.executable, "-m", "slicereg", "render", str(self.project.root),
+                          *dlg.cli_args()])
         self.viewer.status = "Opening brainrender in a separate window..."

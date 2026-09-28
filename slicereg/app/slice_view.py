@@ -5,6 +5,8 @@ from __future__ import annotations
 import cv2
 import numpy as np
 import pandas as pd
+from napari.layers.points._points_constants import Mode as PointsMode
+from napari.layers.points._points_mouse_bindings import add as add_point_on_click
 from napari.utils.colormaps import DirectLabelColormap
 from qtpy.QtCore import QTimer
 from qtpy.QtWidgets import (QHBoxLayout, QLabel, QMessageBox, QPushButton, QTabWidget,
@@ -12,14 +14,16 @@ from qtpy.QtWidgets import (QHBoxLayout, QLabel, QMessageBox, QPushButton, QTabW
 
 from ..atlas import boundaries, label_bbox
 from ..export import map_cells
-from ..overlay import save_overlay_png, warp_atlas
+from ..overlay import draw_outlines, save_overlay_png, warp_atlas
 from ..transform import Alignment, SliceTransform, initial_alignment
 from .align_widget import AlignWidget
 from .cells_widget import CellsWidget
-from .layers import CELL_COLORS, add_channels, contrast_limits
+from .display_widget import DisplayWidget
+from .layers import CELL_COLORS, DISPLAY_DEFAULTS, add_channels, contrast_limits, outline_colormap
 
 CELL_PREFIX = "cells: "
 PICK_RADIUS_SCREEN_PX = 12
+SMOOTH_OUTLINE_DEBOUNCE_MS = 150
 
 
 class SliceView:
@@ -40,9 +44,32 @@ class SliceView:
         self.dirty = False
         self.landmark_mode = False
         self.cell_layers: dict[str, object] = {}
+        self._display = {**DISPLAY_DEFAULTS, **self.project.data.get("display", {})}
+        self._default_cell_size = max(15.0, self.image.shape[1] / 150)
+        self._cell_size = float(self._display.get("cell_size") or self._default_cell_size)
+        self._side_dx = self.image.shape[1] * 1.05
         self._timer = QTimer()
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._refresh_overlay)
+        # Smooth outlines re-fit a contour through every atlas region, which is too
+        # slow to recompute on every tick while a slider is being dragged. Keep the
+        # cheap raster outline live during dragging and only compute the smooth one
+        # once the alignment/display value has settled.
+        self._smooth_timer = QTimer()
+        self._smooth_timer.setSingleShot(True)
+        self._smooth_timer.timeout.connect(self._refresh_smooth_outline)
+
+    @property
+    def display(self) -> dict:
+        return self._display
+
+    @property
+    def default_cell_size(self) -> float:
+        return self._default_cell_size
+
+    @property
+    def cell_size(self) -> float:
+        return self._cell_size
 
     # ---------------------------------------------------------------- setup
     def _initial_alignment(self) -> Alignment:
@@ -69,21 +96,40 @@ class SliceView:
 
     def activate(self) -> None:
         v = self.viewer
+        d = self._display
         off = (self.ds - 1) / 2
         overlay_kw = dict(scale=(self.ds, self.ds), translate=(off, off))
         add_channels(v, self.image, "section")
         tmpl = self.atlas.template
+        tmpl_clim = contrast_limits(tmpl[tmpl.shape[0] // 2])
         self.template_layer = v.add_image(
             np.zeros(self.preview.shape[:2], np.float32), name="atlas template",
             colormap="gray", blending="additive", opacity=0.6, visible=False,
-            contrast_limits=contrast_limits(tmpl[tmpl.shape[0] // 2]), **overlay_kw)
+            contrast_limits=tmpl_clim, **overlay_kw)
         self.regions_layer = v.add_labels(
-            self.labels, name="atlas regions", opacity=0.3, visible=False,
+            self.labels, name="atlas regions", opacity=0.3, visible=d["regions"],
             colormap=DirectLabelColormap(color_dict=self.atlas.color_dict()), **overlay_kw)
         self.outline_layer = v.add_image(
             np.zeros(self.preview.shape[:2], np.float32), name="atlas outlines",
-            colormap="gray", contrast_limits=(0, 1), blending="additive", opacity=0.8,
-            **overlay_kw)
+            colormap=outline_colormap(d["color"]), contrast_limits=(0, 1),
+            blending="translucent", visible=d["outlines"], **overlay_kw)
+
+        side_kw = dict(scale=(self.ds, self.ds), translate=(off, off + self._side_dx))
+        self.side_template_layer = v.add_image(
+            np.zeros(self.preview.shape[:2], np.float32), name="average template (side)",
+            colormap="gray", opacity=1.0, visible=d["side_by_side"],
+            contrast_limits=tmpl_clim, **side_kw)
+        self.side_outline_layer = v.add_image(
+            np.zeros(self.preview.shape[:2], np.float32), name="atlas outlines (side)",
+            colormap=outline_colormap(d["color"]), contrast_limits=(0, 1),
+            blending="translucent", visible=d["side_by_side"] and d["outlines"], **side_kw)
+
+        self.cursor = v.add_points(
+            np.empty((0, 2)), name="cursor", size=max(20, self.image.shape[1] / 80),
+            face_color="transparent", border_color="cyan", border_width=0.15,
+            symbol="cross", visible=False)
+        self.cursor.editable = False
+
         self.landmarks = v.add_points(
             np.empty((0, 2)), name="landmarks", size=max(20, self.image.shape[1] / 120),
             face_color="yellow", border_color="black", symbol="cross")
@@ -95,11 +141,13 @@ class SliceView:
         self.align_widget.load(self.alignment)
         v.mouse_move_callbacks.append(self._on_mouse_move)
         self._refresh_overlay()
+        self._refresh_smooth_outline()
         self._on_tab(self.tabs.currentIndex())
         self.dirty = False
 
     def deactivate(self) -> None:
         self._timer.stop()
+        self._smooth_timer.stop()
         if self._on_mouse_move in self.viewer.mouse_move_callbacks:
             self.viewer.mouse_move_callbacks.remove(self._on_mouse_move)
 
@@ -128,6 +176,9 @@ class SliceView:
         self.hover.setWordWrap(True)
         lay.addWidget(self.hover)
 
+        self.display_widget = DisplayWidget(self)
+        lay.addWidget(self.display_widget)
+
         self.tabs = QTabWidget()
         self.align_widget = AlignWidget(self)
         self.cells_widget = CellsWidget(self)
@@ -146,15 +197,93 @@ class SliceView:
         self.dirty = True
         if not self._timer.isActive():
             self._timer.start(20)
+        self._schedule_smooth_outline()
 
     def _refresh_overlay(self) -> None:
+        """Cheap, always-live refresh: atlas sampling, region colours, raster outline.
+
+        Kept fast enough to run on every tick while a slider is being dragged (unlike
+        the smooth outline, see ``_refresh_smooth_outline``).
+        """
         self.tf = SliceTransform(self.alignment)
         labels, tmpl = warp_atlas(self.tf, self.atlas, self.preview.shape[:2], self.ds)
         self.labels = labels
-        outlines = cv2.dilate(boundaries(labels).astype(np.uint8), np.ones((2, 2), np.uint8))
-        self.outline_layer.data = outlines.astype(np.float32)
         self.regions_layer.data = labels
         self.template_layer.data = tmpl
+        self.side_template_layer.data = tmpl
+        if not self._display.get("smooth", True):
+            outline = self._raster_outline(labels)
+            self.outline_layer.data = outline
+            self.side_outline_layer.data = outline
+
+    def _raster_outline(self, labels: np.ndarray) -> np.ndarray:
+        outlines = cv2.dilate(boundaries(labels).astype(np.uint8), np.ones((2, 2), np.uint8))
+        return outlines.astype(np.float32)
+
+    def _schedule_smooth_outline(self) -> None:
+        if self._display.get("smooth", True):
+            self._smooth_timer.start(SMOOTH_OUTLINE_DEBOUNCE_MS)
+
+    def _refresh_smooth_outline(self) -> None:
+        """Sub-pixel contour outline: fits every region boundary, which is too slow
+        to run on every tick, so this only runs once the alignment/display settings
+        have stopped changing for ``SMOOTH_OUTLINE_DEBOUNCE_MS``."""
+        if not self._display.get("smooth", True):
+            return
+        d = self._display
+        al = self.alignment
+        contours_um = self.atlas.plane_contours(al.ap_um, al.pitch_deg, al.yaw_deg,
+                                                 d.get("sigma", 1.0))
+        off = (self.ds - 1) / 2
+        contours_prev = [(self.tf.plane_to_image(c) - off) / self.ds for c in contours_um]
+        outline = draw_outlines(contours_prev, self.preview.shape[:2], width=d.get("width", 2.0))
+        self.outline_layer.data = outline
+        self.side_outline_layer.data = outline
+
+    # ------------------------------------------------------------- display
+    def set_outlines_visible(self, visible: bool) -> None:
+        self._set_display(outlines=visible)
+
+    def set_regions_visible(self, visible: bool) -> None:
+        self._set_display(regions=visible)
+
+    def set_smooth_outlines(self, smooth: bool) -> None:
+        self._set_display(smooth=smooth)
+
+    def set_outline_sigma(self, sigma: float) -> None:
+        self._set_display(sigma=float(sigma))
+
+    def set_outline_width(self, width: float) -> None:
+        self._set_display(width=float(width))
+
+    def set_outline_color(self, rgb) -> None:
+        self._set_display(color=[float(v) for v in rgb])
+        cmap = outline_colormap(self._display["color"])
+        self.outline_layer.colormap = cmap
+        self.side_outline_layer.colormap = cmap
+
+    def set_side_by_side(self, on: bool) -> None:
+        self._set_display(side_by_side=on)
+        QTimer.singleShot(50, self.viewer.reset_view)
+
+    def _set_display(self, **kwargs) -> None:
+        self._display.update(kwargs)
+        self.project.data["display"] = dict(self._display)
+        self.project.save()
+        self._apply_visibility()
+        self._display_changed()
+
+    def _apply_visibility(self) -> None:
+        d = self._display
+        self.outline_layer.visible = d["outlines"]
+        self.regions_layer.visible = d["regions"]
+        self.side_template_layer.visible = d["side_by_side"]
+        self.side_outline_layer.visible = d["side_by_side"] and d["outlines"]
+
+    def _display_changed(self) -> None:
+        if not self._timer.isActive():
+            self._timer.start(20)
+        self._schedule_smooth_outline()
 
     def auto_fit(self) -> None:
         al = self.alignment
@@ -249,12 +378,40 @@ class SliceView:
     def _add_cell_layer(self, name: str, yx: np.ndarray):
         color = CELL_COLORS[len(self.cell_layers) % len(CELL_COLORS)]
         layer = self.viewer.add_points(
-            yx, name=CELL_PREFIX + name, size=max(15, self.image.shape[1] / 150),
+            yx, name=CELL_PREFIX + name, size=self._cell_size,
             face_color=color, border_color="white", border_width=0.1)
         layer.current_face_color = color
+        layer.current_size = self._cell_size
+        layer._drag_modes = {**type(layer)._drag_modes, PointsMode.ADD: self._add_cell_or_pan}
         layer.events.data.connect(self._on_cells_changed)
         self.cell_layers[name] = layer
         return layer
+
+    def _add_cell_or_pan(self, layer, event):
+        """Add-mode click handler: Shift+drag pans the view instead of adding a cell."""
+        if "Shift" not in event.modifiers:
+            yield from add_point_on_click(layer, event)
+            return
+        cam = self.viewer.camera
+        c0 = np.asarray(cam.center, dtype=float)
+        p0 = np.asarray(event.pos, dtype=float)
+        yield
+        while event.type == "mouse_move":
+            dx, dy = (np.asarray(event.pos, dtype=float) - p0) / cam.zoom
+            c = c0.copy()
+            c[-1] -= dx
+            c[-2] -= dy
+            cam.center = tuple(c)
+            yield
+
+    def set_cell_size(self, px: float) -> None:
+        self._cell_size = float(px)
+        for layer in self.cell_layers.values():
+            layer.size = self._cell_size
+            layer.current_size = self._cell_size
+        self._display["cell_size"] = self._cell_size
+        self.project.data["display"] = dict(self._display)
+        self.project.save()
 
     def add_cell_type(self, name: str) -> None:
         if name not in self.cell_layers:
@@ -281,15 +438,26 @@ class SliceView:
     def _on_cells_changed(self, event=None) -> None:
         action = getattr(event, "action", None)
         if action is None or str(action) in ("added", "removed", "changed"):
+            if action is not None and str(action) == "added":
+                self._remove_offsection_cells()
             self.dirty = True
             self._update_counts()
+
+    def _remove_offsection_cells(self) -> None:
+        """Drop any cell marked outside the section image (e.g. on the side panel)."""
+        h, w = self.image.shape[:2]
+        for layer in self.cell_layers.values():
+            data = np.asarray(layer.data, dtype=float)
+            if not len(data):
+                continue
+            y, x = data[:, 0], data[:, 1]
+            keep = (x >= 0) & (x < w) & (y >= 0) & (y < h)
+            if not keep.all():
+                layer.data = data[keep]
 
     def _update_counts(self) -> None:
         if hasattr(self, "cells_widget"):
             self.cells_widget.set_counts({n: len(l.data) for n, l in self.cell_layers.items()})
-
-    def set_layer_visible(self, name: str, visible: bool) -> None:
-        self.viewer.layers[name].visible = visible
 
     # ------------------------------------------------------------- general
     def _on_tab(self, index: int) -> None:
@@ -307,16 +475,31 @@ class SliceView:
     def _on_mouse_move(self, viewer, event) -> None:
         y, x = event.position[-2:]
         h, w = self.image.shape[:2]
-        if not (0 <= x < w and 0 <= y < h):
+        side_on = self._display.get("side_by_side", False)
+        dx = self._side_dx
+        mirror = None
+        if 0 <= x < w and 0 <= y < h:
+            mx = x
+            if side_on:
+                mirror = (y, mx + dx)
+        elif side_on and 0 <= x - dx < w and 0 <= y < h:
+            mx = x - dx
+            mirror = (y, mx)
+        else:
+            if side_on:
+                self.cursor.visible = False
             return
-        i = min(int(x // self.ds), self.labels.shape[1] - 1)
+        i = min(int(mx // self.ds), self.labels.shape[1] - 1)
         j = min(int(y // self.ds), self.labels.shape[0] - 1)
         rid = int(self.labels[j, i])
         al = self.alignment
-        p = self.atlas.plane_to_3d(self.tf.image_to_plane([[x, y]]), al.ap_um, al.pitch_deg,
+        p = self.atlas.plane_to_3d(self.tf.image_to_plane([[mx, y]]), al.ap_um, al.pitch_deg,
                                    al.yaw_deg)[0]
         self.hover.setText(f"{self.atlas.acronym(rid)} - {self.atlas.region_name(rid)}\n"
                            f"AP {p[0]:.0f}  DV {p[1]:.0f}  ML {p[2]:.0f} um")
+        if mirror is not None:
+            self.cursor.data = np.array([mirror])
+            self.cursor.visible = True
 
     def save(self) -> None:
         al = self.alignment

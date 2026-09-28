@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from slicereg.atlas import Atlas
+from slicereg.atlas import Atlas, label_contours
 
 
 @pytest.fixture(scope="module")
@@ -38,3 +38,37 @@ def test_region_lookup(atlas):
     _, hemi = atlas.lookup(np.array([[5000.0, 4000.0, 3000.0], [5000.0, 4000.0, 8500.0]]))
     assert atlas.hemisphere_name(hemi[0]) == "right"
     assert atlas.hemisphere_name(hemi[1]) == "left"
+
+
+def test_label_contours_are_subpixel_and_shared():
+    """Two touching discs: contours should close up and not double the shared edge."""
+    yy, xx = np.mgrid[0:60, 0:80]
+    labels = np.zeros((60, 80), dtype=np.int64)
+    labels[(xx - 25) ** 2 + (yy - 30) ** 2 <= 15 ** 2] = 1
+    labels[(xx - 55) ** 2 + (yy - 30) ** 2 <= 15 ** 2] = 2
+
+    by_region = label_contours(labels, sigma=1.0)
+    assert set(by_region) == {1, 2}
+    for rid, contours in by_region.items():
+        assert contours, f"region {rid} should have at least one contour"
+        for c in contours:
+            # Sub-pixel: not all vertices land exactly on integer pixel coordinates.
+            assert not np.allclose(c, np.round(c))
+            # find_contours returns closed loops for a fully interior blob.
+            assert np.allclose(c[0], c[-1])
+
+    # The two discs touch around x=40; both regions' contours should pass near there,
+    # tracing the same shared border rather than two independently-jittered lines.
+    near_border = [c for c in by_region[1] for p in c if abs(p[1] - 40) < 1.0]
+    assert near_border, "region 1 should have contour points near the shared border"
+
+
+def test_label_contours_handles_huge_region_ids():
+    labels = np.zeros((40, 40), dtype=np.uint32)
+    labels[5:15, 5:15] = 614454277
+    labels[20:35, 20:35] = 8
+    assert set(label_contours(labels)) == {614454277, 8}
+
+
+def test_label_contours_empty_for_blank_image():
+    assert label_contours(np.zeros((10, 10), dtype=np.int64)) == {}

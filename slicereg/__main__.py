@@ -28,9 +28,20 @@ def main(argv=None) -> None:
 
     p_render = sub.add_parser("render", help="show aligned slices and cells in brainrender")
     p_render.add_argument("project")
-    p_render.add_argument("--no-slices", action="store_true", help="hide section images")
+    p_render.add_argument("--structures", nargs="+", metavar="NAME",
+                          help="brain structures to show, Allen or Paxinos acronyms, "
+                               "e.g. IRt PCRt XII Mo5 Pe5 Acs5 7N")
     p_render.add_argument("--regions", type=int, default=5,
-                          help="show the N regions with most cells (0 = none)")
+                          help="also show the N regions with most cells (0 = none)")
+    p_render.add_argument("--alpha", type=float, default=0.3, help="structure opacity (0-1)")
+    p_render.add_argument("--hemisphere", choices=["both", "left", "right"], default="both",
+                          help="which side of the structures to show")
+    p_render.add_argument("--no-slices", action="store_true", help="hide section images")
+    p_render.add_argument("--no-cells", action="store_true", help="hide counted cells")
+    p_render.add_argument("--cell-types", nargs="+", metavar="TYPE",
+                          help="only show these cell types")
+    p_render.add_argument("--no-brain", action="store_true",
+                          help="hide the transparent whole-brain outline")
     p_render.add_argument("--screenshot", help="save a PNG instead of opening a window")
 
     args = parser.parse_args(argv)
@@ -57,8 +68,14 @@ def main(argv=None) -> None:
     elif args.cmd == "render":
         from .render import render
 
-        render(Project.load(args.project), show_slices=not args.no_slices,
-               top_regions=args.regions, screenshot=args.screenshot)
+        from .render import split_region_text
+
+        structures = [t for s in args.structures or [] for t in split_region_text(s)]
+        render(Project.load(args.project), screenshot=args.screenshot,
+               show_slices=not args.no_slices, top_regions=args.regions,
+               structures=structures, show_cells=not args.no_cells,
+               cell_types=args.cell_types, show_brain=not args.no_brain,
+               region_alpha=args.alpha, hemisphere=args.hemisphere)
 
 
 if __name__ == "__main__":

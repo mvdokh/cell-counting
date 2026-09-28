@@ -15,6 +15,7 @@ from functools import lru_cache
 import numpy as np
 from brainglobe_atlasapi import BrainGlobeAtlas
 from scipy import ndimage as ndi
+from skimage import measure
 
 
 def rotation(pitch_deg: float, yaw_deg: float) -> np.ndarray:
@@ -28,7 +29,7 @@ def rotation(pitch_deg: float, yaw_deg: float) -> np.ndarray:
 class Atlas:
     def __init__(self, name: str):
         self.name = name
-        self.bg = BrainGlobeAtlas(name)
+        self.bg = BrainGlobeAtlas(name, check_latest=False)
         self.res = np.asarray(self.bg.resolution, dtype=float)
         self.shape = np.asarray(self.bg.shape)
         self.extent_um = self.shape * self.res
@@ -74,6 +75,15 @@ class Atlas:
         plane coordinates ((i + 0.5) * step, (j + 0.5) * step)."""
         return _sample_cached(self, round(ap_um, 2), round(pitch_deg, 3), round(yaw_deg, 3))
 
+    def plane_contours(self, ap_um: float, pitch_deg: float = 0.0, yaw_deg: float = 0.0,
+                       sigma: float = 1.0) -> tuple[np.ndarray, ...]:
+        """Sub-pixel region-boundary polylines for this plane, in plane microns.
+
+        Each polyline is an (N, 2) array of (s, t) points. Cached like ``sample_plane``,
+        so dragging sliders that only change colour/width does not retrigger this."""
+        return _contours_cached(self, round(ap_um, 2), round(pitch_deg, 3), round(yaw_deg, 3),
+                                round(float(sigma), 3))
+
     def lookup(self, pts_um: np.ndarray):
         """Region id and hemisphere value (0 = outside) for (N, 3) atlas microns."""
         idx = np.floor(np.atleast_2d(pts_um) / self.res).astype(int)
@@ -110,6 +120,12 @@ class Atlas:
         return id(self)
 
 
+@lru_cache(maxsize=4)
+def atlas_structures(name: str) -> list[dict]:
+    """Structure list (id, acronym, name, ...) without loading the atlas volumes."""
+    return list(BrainGlobeAtlas(name, check_latest=False).structures_list)
+
+
 @lru_cache(maxsize=8)
 def _sample_cached(atlas: Atlas, ap_um: float, pitch_deg: float, yaw_deg: float):
     pts = atlas.plane_grid_3d(ap_um, pitch_deg, yaw_deg)
@@ -120,6 +136,54 @@ def _sample_cached(atlas: Atlas, ap_um: float, pitch_deg: float, yaw_deg: float)
     tmpl = ndi.map_coordinates(atlas.template, coords - 0.5, order=1, mode="constant",
                                cval=0).reshape(rows, cols)
     return ann, tmpl
+
+
+def label_contours(labels: np.ndarray, sigma: float = 1.0,
+                   margin: int = 4) -> dict[int, list[np.ndarray]]:
+    """Sub-pixel (row, col) contours of every non-zero region in a label image.
+
+    Each region's binary mask is Gaussian-blurred and contoured at the 0.5 level, so
+    two touching regions get exactly the same shared border (their blurred masks sum
+    to 1 there) instead of two overlapping, jittery lines.
+    """
+    out: dict[int, list[np.ndarray]] = {}
+    if labels.size == 0 or labels.max() == 0:
+        return out
+    # find_objects allocates one slot per id up to the max; Allen ids reach ~6e8.
+    ids, compact = np.unique(labels, return_inverse=True)
+    compact = compact.reshape(labels.shape)
+    if ids[0] != 0:
+        compact += 1
+        ids = np.concatenate([[0], ids])
+    h, w = labels.shape
+    m = margin + (int(round(3 * sigma)) if sigma > 0 else 0)
+    for idx, sl in enumerate(ndi.find_objects(compact), start=1):
+        if sl is None:
+            continue
+        rid = int(ids[idx])
+        ys, xs = sl
+        y0, y1 = max(ys.start - m, 0), min(ys.stop + m, h)
+        x0, x1 = max(xs.start - m, 0), min(xs.stop + m, w)
+        mask = (compact[y0:y1, x0:x1] == idx).astype(np.float32)
+        if sigma > 0:
+            mask = ndi.gaussian_filter(mask, sigma)
+        for c in measure.find_contours(mask, 0.5):
+            out.setdefault(rid, []).append(c + [y0, x0])
+    return out
+
+
+@lru_cache(maxsize=8)
+def _contours_cached(atlas: Atlas, ap_um: float, pitch_deg: float, yaw_deg: float,
+                     sigma: float) -> tuple[np.ndarray, ...]:
+    ann, _ = _sample_cached(atlas, ap_um, pitch_deg, yaw_deg)
+    by_region = label_contours(ann, sigma)
+    step = atlas.step
+    polylines = []
+    for cs in by_region.values():
+        for c in cs:
+            # (row, col) fractional pixel index -> (s, t) plane microns.
+            polylines.append((c[:, ::-1] + 0.5) * step)
+    return tuple(polylines)
 
 
 def boundaries(labels: np.ndarray) -> np.ndarray:

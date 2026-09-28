@@ -1,0 +1,2 @@
+[console_scripts]
+slicereg = slicereg.__main__:main
