@@ -1,0 +1,12 @@
+numpy
+scipy
+pandas
+tifffile
+imagecodecs
+opencv-python-headless
+scikit-image
+napari[pyqt6]
+magicgui
+brainglobe-atlasapi
+brainrender
+pytest

@@ -1,0 +1,65 @@
+"""Command line entry point.
+
+    python -m slicereg open  C:\\path\\to\\slide.tif     # detect, crop, align, count
+    python -m slicereg export C:\\path\\to\\slide_project
+    python -m slicereg render C:\\path\\to\\slide_project
+"""
+
+from __future__ import annotations
+
+import argparse
+
+
+def main(argv=None) -> None:
+    parser = argparse.ArgumentParser(prog="slicereg", description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_open = sub.add_parser("open", help="open a slide TIFF (or an existing project folder)")
+    p_open.add_argument("path")
+    p_open.add_argument("--project", help="project folder (default: <slide>_project next to it)")
+    p_open.add_argument("--atlas", help="BrainGlobe atlas for a new project, "
+                                        "e.g. allen_mouse_10um (default allen_mouse_25um)")
+    p_open.add_argument("--spacing", type=float,
+                        help="section spacing in um used to guess the next slice's AP position")
+
+    p_export = sub.add_parser("export", help="write cells_all.csv and region_counts.csv")
+    p_export.add_argument("project")
+
+    p_render = sub.add_parser("render", help="show aligned slices and cells in brainrender")
+    p_render.add_argument("project")
+    p_render.add_argument("--no-slices", action="store_true", help="hide section images")
+    p_render.add_argument("--regions", type=int, default=5,
+                          help="show the N regions with most cells (0 = none)")
+    p_render.add_argument("--screenshot", help="save a PNG instead of opening a window")
+
+    args = parser.parse_args(argv)
+    from .io import Project
+
+    if args.cmd == "open":
+        project = Project.open_or_create(args.path, args.project)
+        changed = False
+        if args.atlas and not project.slices:
+            project.data["atlas"] = args.atlas
+            changed = True
+        if args.spacing is not None:
+            project.data["section_spacing_um"] = args.spacing
+            changed = True
+        if changed:
+            project.save()
+        from .app import run
+
+        run(str(project.root))
+    elif args.cmd == "export":
+        from .export import export_project
+
+        print(export_project(Project.load(args.project)))
+    elif args.cmd == "render":
+        from .render import render
+
+        render(Project.load(args.project), show_slices=not args.no_slices,
+               top_regions=args.regions, screenshot=args.screenshot)
+
+
+if __name__ == "__main__":
+    main()

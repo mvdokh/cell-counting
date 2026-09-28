@@ -1,0 +1,15 @@
+[project]
+name = "slicereg"
+version = "0.1.0"
+description = "Crop brain sections from slide scans, align them to the Allen CCF, and count cells"
+requires-python = ">=3.10"
+
+[project.scripts]
+slicereg = "slicereg.__main__:main"
+
+[tool.setuptools]
+packages = ["slicereg", "slicereg.app"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
