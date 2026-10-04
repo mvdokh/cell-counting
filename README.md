@@ -56,6 +56,37 @@ This creates a project folder `slide_project` next to the TIFF and opens the nap
 window. Running the same command again (or passing the project folder itself)
 reopens the project where you left off.
 
+### A folder of section images
+
+If each section was imaged separately (e.g. Zeiss `.lsm` tile scans), open the
+folder instead:
+
+```powershell
+slicereg open "E:\Histology\Zeiss\TJO_Optotag_16"
+```
+
+The first time, this writes `slicereg_folder.json` into the image folder and creates
+`TJO_Optotag_16_project` next to it. The config says which files to use and what
+their names mean:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `pattern` | `c(?P<col>\d+)_r(?P<row>\d+).*_MIP\.lsm$` | Regular expression for the files to use; the `col` and `row` groups give the section's position on the slide |
+| `order` | `column` | Section order for Prev/Next and AP guesses: `column` = c1_r1, c1_r2, ...; `row` = c1_r1, c2_r1, ... |
+| `channels` | rfp (red), nissl (blue) | Name and napari colour of each channel, in file order |
+| `align_channel` | `nissl` | Channel DeepSlice sees |
+| `pixel_um` | `null` | Pixel size in microns; `null` reads it from the file |
+| `atlas`, `section_spacing_um` | `allen_mouse_25um`, 100 | Used when the project is created |
+
+The slide view then shows every section at true size in its column/row, cropped to
+its tissue and with each section's brightness stretched separately so sections
+imaged with different settings look alike (the slice view itself shows the raw
+data). Double-click
+one to align and count it exactly as above. Z-stacks are max-projected, and mosaics
+that were saved as separate tiles are stitched from the tile positions in the file.
+Click *Rescan folder* after editing the config or adding images; existing sections
+keep their alignments and cells.
+
 Options for `open`:
 
 | Option | Meaning |
@@ -84,7 +115,8 @@ Options for `open`:
 5. **1. Align to atlas** tab: set the AP position, tilt, rotation, scale and centre
    until the atlas outline matches the tissue. *Predict alignment with DeepSlice*
    (Allen mouse atlases only, see [Optional: DeepSlice](#optional-deepslice)) fills
-   all of these in from the section image in about 10 s; your *Mirror atlas
+   all of these in from the section image in about 10 s (it is shown only the tissue
+   inside the section's mask, so neighbouring sections don't confuse it); your *Mirror atlas
    left/right* setting is kept, since DeepSlice can't tell the hemispheres apart. If
    the guess is off on a fluorescence image, tick *Invert image* and run it again;
    *Undo DeepSlice* restores the previous alignment and landmarks. *Auto-fit to

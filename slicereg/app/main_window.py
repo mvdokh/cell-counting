@@ -64,11 +64,12 @@ class App:
         QTimer.singleShot(50, self.viewer.reset_view)
 
     def show_slide(self) -> None:
+        from .folder_view import FolderView
         from .slide_view import SlideView
 
         if self.view is not None and not self.view.can_leave():
             return
-        self._set_view(SlideView(self))
+        self._set_view(FolderView(self) if self.project.is_folder else SlideView(self))
 
     def open_slice(self, sid: int) -> None:
         from .slice_view import SliceView

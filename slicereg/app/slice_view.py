@@ -21,7 +21,8 @@ from ..transform import Alignment, SliceTransform, initial_alignment
 from .align_widget import AlignWidget
 from .cells_widget import CellsWidget
 from .display_widget import DisplayWidget
-from .layers import CELL_COLORS, DISPLAY_DEFAULTS, add_channels, contrast_limits, outline_colormap
+from .layers import (CELL_COLORS, DISPLAY_DEFAULTS, add_channels, channel_index,
+                     contrast_limits, outline_colormap)
 
 CELL_PREFIX = "cells: "
 PICK_RADIUS_SCREEN_PX = 12
@@ -63,6 +64,7 @@ class SliceView:
         self._active = False
         self._deepslice = None
         self._deepslice_running = False
+        self._deepslice_crop = (0.0, 0.0, *self._image_size())
         self._deepslice_log: list[str] = []
         self._pre_deepslice: Alignment | None = None
 
@@ -91,8 +93,10 @@ class SliceView:
             ap = nb["ap_um"] + spacing * (pos - ids.index(nb_id))
             pitch, yaw, rot, flip = nb["pitch_deg"], nb["yaw_deg"], nb["rotation_deg"], nb["flip"]
         ap = float(np.clip(ap, 0, self.atlas.extent_um[0]))
+        pixel_um = self.slice.get("pixel_um")
         return initial_alignment(self.atlas, self._image_size(), self._mask_bbox(), ap,
-                                 pitch, yaw, rot, flip)
+                                 pitch, yaw, rot, flip,
+                                 scale=1.0 / pixel_um if pixel_um else None)
 
     def _image_size(self) -> tuple[int, int]:
         return int(self.image.shape[1]), int(self.image.shape[0])
@@ -106,7 +110,7 @@ class SliceView:
         d = self._display
         off = (self.ds - 1) / 2
         overlay_kw = dict(scale=(self.ds, self.ds), translate=(off, off))
-        add_channels(v, self.image, "section")
+        add_channels(v, self.image, "section", channels=self.project.data.get("channels"))
         tmpl = self.atlas.template
         tmpl_clim = contrast_limits(tmpl[tmpl.shape[0] // 2])
         self.template_layer = v.add_image(
@@ -167,7 +171,9 @@ class SliceView:
         pos = ids.index(self.sid)
         w = QWidget()
         lay = QVBoxLayout(w)
-        title = QLabel(f"<b>Slice {self.sid:02d}</b> ({pos + 1} of {len(ids)})")
+        name = self.slice.get("name")
+        title = QLabel(f"<b>Slice {self.sid:02d}{f' - {name}' if name else ''}</b> "
+                       f"({pos + 1} of {len(ids)})")
         lay.addWidget(title)
         nav = QHBoxLayout()
         for text, target in (("< Prev", pos - 1), ("Slide", None), ("Next >", pos + 1)):
@@ -326,7 +332,14 @@ class SliceView:
         d = self.project.slice_dir(self.sid)
         png, out = d / "deepslice_input.png", d / "deepslice.json"
         out.unlink(missing_ok=True)
-        deepslice.write_input_image(self.preview, png, invert)
+        ch = channel_index(self.project, self.project.data.get("align_channel"))
+        mask = self.project.load_mask(self.sid)
+        x0, y0, x1, y1 = deepslice.write_input_image(
+            self.preview if ch is None else self.preview[..., [ch]], png, invert,
+            mask=mask if mask.shape == self.preview.shape[:2] else None)
+        w, h = self._image_size()
+        sx, sy = w / self.preview.shape[1], h / self.preview.shape[0]
+        self._deepslice_crop = (x0 * sx, y0 * sy, x1 * sx, y1 * sy)
         cmd = deepslice.worker_command(png, out)
         proc = QProcess()
         proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
@@ -363,7 +376,8 @@ class SliceView:
             status.setText("DeepSlice failed, see the terminal for details.")
             print("".join(self._deepslice_log)[-5000:])
             return
-        anchoring = json.loads(out.read_text())
+        anchoring = deepslice.uncrop_anchoring(json.loads(out.read_text()),
+                                               self._deepslice_crop, self._image_size())
         new = deepslice.anchoring_to_alignment(anchoring, self.atlas.name,
                                                self.atlas.plane_size_um, self._image_size())
         old = self.alignment

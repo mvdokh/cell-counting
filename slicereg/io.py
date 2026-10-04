@@ -78,8 +78,11 @@ def imwrite_png(path: Path, rgb: np.ndarray) -> None:
 
 
 def tissue_mask(img: np.ndarray, threshold: float, dark_background: bool,
-                blur_px: int) -> np.ndarray:
-    """Binary mask of the main piece(s) of tissue in a single section image."""
+                blur_px: int, largest_only: bool = False) -> np.ndarray:
+    """Binary mask of the main piece(s) of tissue in a single section image.
+
+    ``largest_only`` drops everything but the biggest piece, e.g. bits of neighbouring
+    sections at the edge of an image that is known to hold one section."""
     g = np.asarray(img).max(axis=2).astype(np.float32)
     k = max(3, int(blur_px) | 1)
     g = cv2.GaussianBlur(g, (k, k), 0)
@@ -90,6 +93,8 @@ def tissue_mask(img: np.ndarray, threshold: float, dark_background: bool,
     if n == 0:
         return m
     areas = ndi.sum(m, lab, index=np.arange(1, n + 1))
+    if largest_only:
+        return lab == int(np.argmax(areas)) + 1
     keep = np.flatnonzero(areas >= 0.1 * areas.max()) + 1
     return np.isin(lab, keep)
 
@@ -104,14 +109,18 @@ class Project:
 
     @classmethod
     def open_or_create(cls, path: str | Path, project_dir: str | Path | None = None) -> "Project":
+        """Open a project folder, or create a project for a slide image or a folder of
+        section images (``<name>_project`` next to it unless ``project_dir`` is given)."""
         path = Path(path)
-        if path.is_dir():
+        if path.is_dir() and (path / "project.json").exists():
             return cls.load(path)
         if path.name == "project.json":
             return cls.load(path.parent)
         root = Path(project_dir) if project_dir else path.with_name(path.stem + "_project")
         if (root / "project.json").exists():
             return cls.load(root)
+        if path.is_dir():
+            return cls._create_folder_project(path, root)
         root.mkdir(parents=True, exist_ok=True)
         data = {
             "source": str(path.resolve()),
@@ -125,6 +134,69 @@ class Project:
         proj = cls(root, data)
         proj.save()
         return proj
+
+    @classmethod
+    def _create_folder_project(cls, folder: Path, root: Path) -> "Project":
+        from .folder import find_sections, load_config
+
+        config, _ = load_config(folder)
+        if not find_sections(folder, config):
+            raise FileNotFoundError(
+                f"No files in {folder} match the pattern {config['pattern']!r} from "
+                f"{folder / 'slicereg_folder.json'}; edit it to match your file names.")
+        root.mkdir(parents=True, exist_ok=True)
+        data = {
+            "source": str(folder.resolve()),
+            "source_type": "folder",
+            "atlas": config["atlas"],
+            "threshold": None,
+            "dark_background": True,
+            "section_spacing_um": float(config["section_spacing_um"]),
+            "slices": [],
+        }
+        proj = cls(root, data)
+        proj.sync_folder()
+        return proj
+
+    @property
+    def is_folder(self) -> bool:
+        return self.data.get("source_type") == "folder"
+
+    def sync_folder(self) -> list[int]:
+        """Pick up the folder's config and any new section files.
+
+        Sections keep their id (matched by name) so alignments and cells survive.
+        Returns the ids whose images still need to be imported."""
+        from .folder import find_sections, load_config
+
+        folder = Path(self.data["source"])
+        config, _ = load_config(folder)
+        self.data["channels"] = config["channels"]
+        self.data["align_channel"] = config["align_channel"]
+        old = {s["name"]: s for s in self.slices}
+        next_id = max(self._used_ids() | {0}) + 1
+        slices = []
+        for found in find_sections(folder, config):
+            entry = old.get(found["name"])
+            if entry is None:
+                entry, next_id = {"id": next_id}, next_id + 1
+            entry.update(found)
+            if config["pixel_um"]:
+                entry["pixel_um"] = float(config["pixel_um"])
+            slices.append(entry)
+        self.data["slices"] = slices
+        self.save()
+        return [s["id"] for s in slices if not self.status(s["id"])["cropped"]]
+
+    def import_section(self, sid: int) -> None:
+        """Read one section file of a folder project into the slice folder."""
+        from .folder import read_section
+
+        s = self.get_slice(sid)
+        img, pixel_um = read_section(Path(self.data["source"]) / s["file"])
+        if pixel_um and "pixel_um" not in s:
+            s["pixel_um"] = pixel_um
+        self._write_section(sid, img, blur_um=80.0, largest_only=True)
 
     @classmethod
     def load(cls, root: str | Path) -> "Project":
@@ -226,23 +298,31 @@ class Project:
             self.save_cells(sid, cells)
 
     def crop_slice(self, sid: int) -> None:
+        x0, y0, x1, y1 = self.get_slice(sid)["bbox"]
+        crop = np.ascontiguousarray(self.slide[y0:y1, x0:x1])
+        self._write_section(sid, crop, blur_px_full=5 * self.data["thumb_factor"])
+
+    def _write_section(self, sid: int, img: np.ndarray, blur_px_full: float | None = None,
+                       blur_um: float | None = None, largest_only: bool = False) -> None:
+        """Save image.tif, preview.tif and mask.png for one section."""
         s = self.get_slice(sid)
-        x0, y0, x1, y1 = s["bbox"]
         d = self.slice_dir(sid)
         d.mkdir(parents=True, exist_ok=True)
-        crop = np.ascontiguousarray(self.slide[y0:y1, x0:x1])
-        tifffile.imwrite(d / "image.tif", crop, compression="zlib",
-                         photometric="rgb" if crop.shape[2] == 3 else "minisblack")
-        ds = max(1, int(round((x1 - x0) / PREVIEW_WIDTH)))
+        tifffile.imwrite(d / "image.tif", img, compression="zlib",
+                         photometric="rgb" if img.shape[2] == 3 else "minisblack")
+        ds = max(1, int(round(img.shape[1] / PREVIEW_WIDTH)))
         s["ds"] = ds
-        preview = downsample(crop, ds)
+        s["size"] = [int(img.shape[1]), int(img.shape[0])]
+        preview = downsample(img, ds)
         tifffile.imwrite(d / "preview.tif", preview)
         thr = self.data["threshold"]
         if thr is None:
             thr = float(cv2.threshold(preview.max(axis=2).astype(np.uint8), 0, 255,
                                       cv2.THRESH_BINARY + cv2.THRESH_OTSU)[0])
-        blur = 5 * self.data["thumb_factor"] / ds
-        mask = tissue_mask(preview, thr, self.data["dark_background"], int(blur))
+        if blur_um is not None and s.get("pixel_um"):
+            blur_px_full = blur_um / s["pixel_um"]
+        blur = (blur_px_full or 80.0) / ds
+        mask = tissue_mask(preview, thr, self.data["dark_background"], int(blur), largest_only)
         cv2.imwrite(str(d / "mask.png"), mask.astype(np.uint8) * 255)
 
     def load_image(self, sid: int) -> np.ndarray:

@@ -111,9 +111,10 @@ class SlideView:
 
     def _describe(self, sid: int) -> str:
         st = self.project.status(sid)
-        parts = [f"slice {sid:02d}"]
+        name = self.project.get_slice(sid).get("name")
+        parts = [f"slice {sid:02d}" + (f" ({name})" if name else "")]
         if not st["cropped"]:
-            parts.append("not cropped")
+            parts.append("not imported" if self.project.is_folder else "not cropped")
         if st["aligned"]:
             parts.append("aligned")
         if st["counted"]:
@@ -123,7 +124,7 @@ class SlideView:
 
     def _short_label(self, sid: int) -> str:
         st = self.project.status(sid)
-        label = f"{sid:02d}"
+        label = self.project.get_slice(sid).get("name") or f"{sid:02d}"
         if st["aligned"]:
             label += " A"
         if st["counted"]:

@@ -107,8 +107,11 @@ class SliceTransform:
 
 def initial_alignment(atlas, image_size, mask_bbox_px, ap_um: float, pitch_deg: float = 0.0,
                       yaw_deg: float = 0.0, rotation_deg: float = 0.0,
-                      flip: bool = False) -> Alignment:
-    """Fit scale and translation so the atlas brain outline matches the tissue bbox."""
+                      flip: bool = False, scale: float | None = None) -> Alignment:
+    """Fit scale and translation so the atlas brain outline matches the tissue bbox.
+
+    With a known ``scale`` (image pixels per micron, i.e. 1 / pixel size) only the
+    translation is fitted, centring the atlas outline on the tissue."""
     from .atlas import label_bbox
 
     ann, _ = atlas.sample_plane(ap_um, pitch_deg, yaw_deg)
@@ -119,13 +122,16 @@ def initial_alignment(atlas, image_size, mask_bbox_px, ap_um: float, pitch_deg: 
     if ab is None or mask_bbox_px is None:
         w, h = image_size
         pw, ph = atlas.plane_size_um
-        al.scale_x = al.scale_y = min(w / pw, h / ph)
+        al.scale_x = al.scale_y = scale or min(w / pw, h / ph)
         al.tx, al.ty = w / 2, h / 2
         return al
     s0, t0, s1, t1 = (np.asarray(ab, dtype=float) * atlas.step).tolist()
     x0, y0, x1, y1 = (float(v) for v in mask_bbox_px)
-    al.scale_x = (x1 - x0) / (s1 - s0)
-    al.scale_y = (y1 - y0) / (t1 - t0)
+    if scale:
+        al.scale_x = al.scale_y = float(scale)
+    else:
+        al.scale_x = (x1 - x0) / (s1 - s0)
+        al.scale_y = (y1 - y0) / (t1 - t0)
     tf = SliceTransform(al)
     centre_img = tf.affine([(s0 + s1) / 2, (t0 + t1) / 2])[0]
     al.tx = float((x0 + x1) / 2 - centre_img[0])

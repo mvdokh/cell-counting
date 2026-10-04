@@ -1,6 +1,7 @@
 """Command line entry point.
 
     python -m slicereg open  C:\\path\\to\\slide.tif     # detect, crop, align, count
+    python -m slicereg open  C:\\path\\to\\image_folder  # one image file per section
     python -m slicereg export C:\\path\\to\\slide_project
     python -m slicereg render C:\\path\\to\\slide_project
     python -m slicereg deepslice-setup                  # one-off, for DeepSlice alignment
@@ -16,7 +17,8 @@ def main(argv=None) -> None:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_open = sub.add_parser("open", help="open a slide TIFF (or an existing project folder)")
+    p_open = sub.add_parser("open", help="open a slide TIFF, a folder of section images "
+                                         "(see slicereg_folder.json), or a project folder")
     p_open.add_argument("path")
     p_open.add_argument("--project", help="project folder (default: <slide>_project next to it)")
     p_open.add_argument("--atlas", help="BrainGlobe atlas for a new project, "
@@ -61,7 +63,7 @@ def main(argv=None) -> None:
     if args.cmd == "open":
         project = Project.open_or_create(args.path, args.project)
         changed = False
-        if args.atlas and not project.slices:
+        if args.atlas and not any(project.status(s["id"])["aligned"] for s in project.slices):
             project.data["atlas"] = args.atlas
             changed = True
         if args.spacing is not None:

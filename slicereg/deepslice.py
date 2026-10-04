@@ -78,8 +78,35 @@ def input_image(preview: np.ndarray, invert: bool = False) -> np.ndarray:
     return (grey * 255).astype(np.uint8)
 
 
-def write_input_image(preview: np.ndarray, path: Path, invert: bool = False) -> None:
-    cv2.imwrite(str(path), input_image(preview, invert))
+def write_input_image(preview: np.ndarray, path: Path, invert: bool = False,
+                      mask: np.ndarray | None = None, pad: float = 0.03):
+    """Write the DeepSlice input; return the (x0, y0, x1, y1) preview-pixel crop it shows.
+
+    With a tissue ``mask`` everything else (e.g. bits of neighbouring sections) is
+    blanked and the image is cropped to the tissue, which is what DeepSlice expects."""
+    grey = input_image(preview, invert)
+    h, w = grey.shape
+    box = (0, 0, w, h)
+    if mask is not None and mask.any():
+        grey[~mask] = 255 if invert else 0
+        ys, xs = np.nonzero(mask)
+        p = int(pad * max(np.ptp(xs), np.ptp(ys)))
+        box = (max(0, xs.min() - p), max(0, ys.min() - p),
+               min(w, xs.max() + 1 + p), min(h, ys.max() + 1 + p))
+    x0, y0, x1, y1 = box
+    cv2.imwrite(str(path), grey[y0:y1, x0:x1])
+    return box
+
+
+def uncrop_anchoring(anchoring: dict, crop, image_size) -> dict:
+    """Anchoring of a crop ``(x0, y0, x1, y1)`` -> anchoring of the whole image."""
+    a = np.array([float(anchoring[k]) for k in ANCHOR_KEYS])
+    o, u, v = a[:3], a[3:6], a[6:]
+    x0, y0, x1, y1 = (float(c) for c in crop)
+    w, h = (float(s) for s in image_size)
+    cw, ch = x1 - x0, y1 - y0
+    o = o - x0 / cw * u - y0 / ch * v
+    return dict(zip(ANCHOR_KEYS, (*o, *(u * w / cw), *(v * h / ch))))
 
 
 def _quicknii_to_asr(q: np.ndarray) -> np.ndarray:
