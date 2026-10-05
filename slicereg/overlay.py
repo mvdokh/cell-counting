@@ -52,7 +52,7 @@ def warp_atlas(tf: SliceTransform, atlas: Atlas, shape: tuple[int, int], ds: int
 
 def draw_outlines(contours_px, shape: tuple[int, int], width: float = 2.0,
                   supersample: int = 3) -> np.ndarray:
-    """Anti-aliased 0..1 canvas of the given (x, y) polylines.
+    """Anti-aliased uint8 (0..255) canvas of the given (x, y) polylines.
 
     Drawn at ``supersample``x resolution and downsampled, so lines can be smooth and
     thinner than one output pixel wide.
@@ -72,7 +72,7 @@ def draw_outlines(contours_px, shape: tuple[int, int], width: float = 2.0,
         cv2.polylines(canvas, polys, False, 255, lw, lineType=cv2.LINE_8)
     if k > 1:
         canvas = cv2.resize(canvas, (w, h), interpolation=cv2.INTER_AREA)
-    return canvas.astype(np.float32) / 255.0
+    return canvas
 
 
 def save_overlay_png(path, preview: np.ndarray, labels: np.ndarray) -> None:

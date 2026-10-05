@@ -42,8 +42,16 @@ class FolderView(SlideView):
         self._boxes = self._build_overview()
         self._build_dock()
         self._refresh_labels()
+        self.list.currentItemChanged.connect(self._on_list_selection)
         self.viewer.mouse_double_click_callbacks.append(self._on_double_click)
-        self.viewer.status = "Double-click a section to align it and count cells."
+        self.viewer.mouse_drag_callbacks.append(self._on_click)
+        self.viewer.status = ("Click a section to select it, double-click to align it and "
+                              "count cells.")
+
+    def deactivate(self) -> None:
+        if self._on_click in self.viewer.mouse_drag_callbacks:
+            self.viewer.mouse_drag_callbacks.remove(self._on_click)
+        super().deactivate()
 
     def _import_missing(self) -> None:
         to_import = self.project.sync_folder()
@@ -100,13 +108,52 @@ class FolderView(SlideView):
         add_channels(self.viewer, canvas, "slide", channels=self.project.data.get("channels"),
                      limits=(0, 255), scale=(um_px, um_px), translate=(um_px / 2, um_px / 2))
         sids = list(boxes)
+        self._edge_um = 2.5 * um_px
         self.shapes = self.viewer.add_shapes(
             [_rect(boxes[sid]) for sid in sids], shape_type="rectangle", name="sections",
-            edge_color="yellow", face_color="transparent", edge_width=2.5 * um_px,
+            edge_color="yellow", face_color="transparent", edge_width=self._edge_um,
             features={"sid": sids, "label": [""] * len(sids)},
             text={"string": "{label}", "color": "yellow", "size": 11, "anchor": "upper_left"})
         self.shapes.mode = "pan_zoom"
         return boxes
+
+    def select(self, sid: int) -> None:
+        """Highlight a section on the overview and in the list."""
+        for row in range(self.list.count()):
+            if self.list.item(row).data(Qt.UserRole) == sid:
+                self.list.setCurrentRow(row)
+                break
+        self._highlight(sid)
+
+    def _highlight(self, sid: int | None) -> None:
+        if self.shapes is None or not len(self.shapes.data):
+            return
+        sids = [int(s) for s in self.shapes.features["sid"]]
+        self.shapes.edge_color = [[0, 1, 1, 1] if s == sid else [1, 1, 0, 1] for s in sids]
+        self.shapes.edge_width = [self._edge_um * (2.5 if s == sid else 1) for s in sids]
+        name = self.project.get_slice(sid).get("name") if sid is not None else None
+        if name:
+            self.viewer.status = (f"Selected {name}: double-click it or click "
+                                  "'Open selected section'.")
+
+    def _on_list_selection(self, item, _previous=None) -> None:
+        if item is not None and item.data(Qt.UserRole) is not None:
+            self._highlight(item.data(Qt.UserRole))
+
+    def _on_click(self, viewer, event):
+        """Select the section under a click; dragging still pans the view."""
+        if event.button != 1:
+            return
+        start = np.asarray(event.pos, dtype=float)
+        dragged = False
+        yield
+        while event.type == "mouse_move":
+            dragged = dragged or np.hypot(*(np.asarray(event.pos, float) - start)) > 4
+            yield
+        if not dragged:
+            sid = self._section_at(*event.position[-2:])
+            if sid is not None:
+                self.select(sid)
 
     def _build_dock(self) -> None:
         w = QWidget()
@@ -114,7 +161,8 @@ class FolderView(SlideView):
         folder = self.project.data["source"]
         help_text = QLabel(
             f"Sections from {folder}, laid out by their column/row on the slide.\n"
-            "Double-click a section (or a list entry) to align it and count cells.\n"
+            "Click a section to select it; double-click it (or a list entry) to align it "
+            "and count cells.\n"
             "Labels: name, 'A' = aligned, (n) = cells counted.\n"
             f"File names, channels and section order are set in {CONFIG_NAME} in that "
             "folder; click 'Rescan folder' after editing it or adding images.")

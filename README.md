@@ -75,14 +75,15 @@ their names mean:
 | `order` | `column` | Section order for Prev/Next and AP guesses: `column` = c1_r1, c1_r2, ...; `row` = c1_r1, c2_r1, ... |
 | `channels` | rfp (red), nissl (blue) | Name and napari colour of each channel, in file order |
 | `align_channel` | `nissl` | Channel DeepSlice sees |
+| `auto_crop` | `true` | Crop each image to its main section and blank bits of neighbouring sections |
 | `pixel_um` | `null` | Pixel size in microns; `null` reads it from the file |
 | `atlas`, `section_spacing_um` | `allen_mouse_25um`, 100 | Used when the project is created |
 
 The slide view then shows every section at true size in its column/row, cropped to
 its tissue and with each section's brightness stretched separately so sections
 imaged with different settings look alike (the slice view itself shows the raw
-data). Double-click
-one to align and count it exactly as above. Z-stacks are max-projected, and mosaics
+data). Click a section to select it (its box turns cyan) and double-click it, or
+use *Open selected section*, to align and count it exactly as above. Z-stacks are max-projected, and mosaics
 that were saved as separate tiles are stitched from the tile positions in the file.
 Click *Rescan folder* after editing the config or adding images; existing sections
 keep their alignments and cells.

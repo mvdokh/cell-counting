@@ -173,6 +173,7 @@ class Project:
         config, _ = load_config(folder)
         self.data["channels"] = config["channels"]
         self.data["align_channel"] = config["align_channel"]
+        self.data["auto_crop"] = bool(config["auto_crop"])
         old = {s["name"]: s for s in self.slices}
         next_id = max(self._used_ids() | {0}) + 1
         slices = []
@@ -186,17 +187,59 @@ class Project:
             slices.append(entry)
         self.data["slices"] = slices
         self.save()
-        return [s["id"] for s in slices if not self.status(s["id"])["cropped"]]
+        return [s["id"] for s in slices if not self.status(s["id"])["cropped"]
+                or s.get("auto_crop", False) != self.data["auto_crop"]]
 
-    def import_section(self, sid: int) -> None:
-        """Read one section file of a folder project into the slice folder."""
+    def import_section(self, sid: int, auto_crop: bool | None = None) -> None:
+        """Read one section file of a folder project into the slice folder.
+
+        ``auto_crop`` crops the image to the main piece of tissue and blanks anything
+        else (bits of neighbouring sections). The crop box is stored as ``crop`` in
+        source-file pixels; existing alignment and cells are moved with it."""
         from .folder import read_section
 
         s = self.get_slice(sid)
         img, pixel_um = read_section(Path(self.data["source"]) / s["file"])
         if pixel_um and "pixel_um" not in s:
             s["pixel_um"] = pixel_um
+        h, w = img.shape[:2]
+        crop = [0, 0, w, h]
+        if auto_crop is None:
+            auto_crop = self.data.get("auto_crop", True)
+        if auto_crop:
+            img, crop = self._crop_to_tissue(img, s.get("pixel_um"))
+        old = s.get("crop", [0, 0, *s.get("size", (w, h))])
+        if old[:2] != crop[:2] and self.status(sid)["cropped"]:
+            self._shift_slice_data(sid, old[0] - crop[0], old[1] - crop[1], crop)
+        s["crop"] = [int(v) for v in crop]
+        s["auto_crop"] = bool(auto_crop)
         self._write_section(sid, img, blur_um=80.0, largest_only=True)
+
+    def _crop_to_tissue(self, img: np.ndarray, pixel_um: float | None,
+                        margin_um: float = 150.0) -> tuple[np.ndarray, list[int]]:
+        """Crop to the largest piece of tissue (plus a margin) and zero everything
+        outside that piece's mask, dilated by the margin so its edge isn't clipped."""
+        h, w = img.shape[:2]
+        ds = max(1, int(round(w / PREVIEW_WIDTH)))
+        small = downsample(img, ds)
+        thr = self.data["threshold"]
+        if thr is None:
+            thr = float(cv2.threshold(small.max(axis=2).astype(np.uint8), 0, 255,
+                                      cv2.THRESH_BINARY + cv2.THRESH_OTSU)[0])
+        px_um = pixel_um or 1.0
+        mask = tissue_mask(small, thr, self.data["dark_background"],
+                           int(80.0 / px_um / ds), largest_only=True)
+        if not mask.any():
+            return img, [0, 0, w, h]
+        k = max(1, int(round(margin_um / px_um / ds)))
+        mask = cv2.dilate(mask.astype(np.uint8), np.ones((2 * k + 1, 2 * k + 1), np.uint8))
+        ys, xs = np.nonzero(mask)
+        fx, fy = w / small.shape[1], h / small.shape[0]
+        x0, x1 = max(0, int(xs.min() * fx)), min(w, int(np.ceil((xs.max() + 1) * fx)))
+        y0, y1 = max(0, int(ys.min() * fy)), min(h, int(np.ceil((ys.max() + 1) * fy)))
+        full_mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)[y0:y1, x0:x1]
+        out = img[y0:y1, x0:x1] * full_mask[..., None].astype(img.dtype)
+        return np.ascontiguousarray(out), [x0, y0, x1, y1]
 
     @classmethod
     def load(cls, root: str | Path) -> "Project":

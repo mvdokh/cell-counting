@@ -27,6 +27,7 @@ from .layers import (CELL_COLORS, DISPLAY_DEFAULTS, add_channels, channel_index,
 CELL_PREFIX = "cells: "
 PICK_RADIUS_SCREEN_PX = 12
 SMOOTH_OUTLINE_DEBOUNCE_MS = 150
+FINE_OVERLAY_MAX_PX = 8000  # longest side of the settled (full-resolution) atlas overlays
 
 
 class SliceView:
@@ -54,13 +55,15 @@ class SliceView:
         self._timer = QTimer()
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._refresh_overlay)
-        # Smooth outlines re-fit a contour through every atlas region, which is too
-        # slow to recompute on every tick while a slider is being dragged. Keep the
-        # cheap raster outline live during dragging and only compute the smooth one
-        # once the alignment/display value has settled.
+        # The full-resolution smooth outline is too slow to recompute on every tick
+        # while a slider is being dragged. Keep the cheap preview-resolution overlays
+        # live during dragging and only render it once the alignment/display value
+        # has settled.
+        self._fine_ds = max(1, int(np.ceil(max(self.image.shape[:2]) / FINE_OVERLAY_MAX_PX)))
+        self._fine_shape = tuple(-(-int(n) // self._fine_ds) for n in self.image.shape[:2])
         self._smooth_timer = QTimer()
         self._smooth_timer.setSingleShot(True)
-        self._smooth_timer.timeout.connect(self._refresh_smooth_outline)
+        self._smooth_timer.timeout.connect(self._refresh_fine)
         self._active = False
         self._deepslice = None
         self._deepslice_running = False
@@ -121,8 +124,8 @@ class SliceView:
             self.labels, name="atlas regions", opacity=0.3, visible=d["regions"],
             colormap=DirectLabelColormap(color_dict=self.atlas.color_dict()), **overlay_kw)
         self.outline_layer = v.add_image(
-            np.zeros(self.preview.shape[:2], np.float32), name="atlas outlines",
-            colormap=outline_colormap(d["color"]), contrast_limits=(0, 1),
+            np.zeros(self.preview.shape[:2], np.uint8), name="atlas outlines",
+            colormap=outline_colormap(d["color"]), contrast_limits=(0, 255),
             blending="translucent", visible=d["outlines"], **overlay_kw)
 
         side_kw = dict(scale=(self.ds, self.ds), translate=(off, off + self._side_dx))
@@ -131,10 +134,9 @@ class SliceView:
             colormap="gray", opacity=1.0, visible=d["side_by_side"],
             contrast_limits=tmpl_clim, **side_kw)
         self.side_outline_layer = v.add_image(
-            np.zeros(self.preview.shape[:2], np.float32), name="atlas outlines (side)",
-            colormap=outline_colormap(d["color"]), contrast_limits=(0, 1),
+            np.zeros(self.preview.shape[:2], np.uint8), name="atlas outlines (side)",
+            colormap=outline_colormap(d["color"]), contrast_limits=(0, 255),
             blending="translucent", visible=d["side_by_side"] and d["outlines"], **side_kw)
-
         self.cursor = v.add_points(
             np.empty((0, 2)), name="cursor", size=max(20, self.image.shape[1] / 80),
             face_color="transparent", border_color="cyan", border_width=0.15,
@@ -151,8 +153,9 @@ class SliceView:
         self._build_dock()
         self.align_widget.load(self.alignment)
         v.mouse_move_callbacks.append(self._on_mouse_move)
+        v.mouse_drag_callbacks.append(self._route_click)
         self._refresh_overlay()
-        self._refresh_smooth_outline()
+        self._refresh_fine()
         self._on_tab(self.tabs.currentIndex())
         self.dirty = False
         self._active = True
@@ -165,6 +168,8 @@ class SliceView:
             self._deepslice.kill()
         if self._on_mouse_move in self.viewer.mouse_move_callbacks:
             self.viewer.mouse_move_callbacks.remove(self._on_mouse_move)
+        if self._route_click in self.viewer.mouse_drag_callbacks:
+            self.viewer.mouse_drag_callbacks.remove(self._route_click)
 
     def _build_dock(self) -> None:
         ids = [s["id"] for s in self.project.slices]
@@ -214,13 +219,25 @@ class SliceView:
         self.dirty = True
         if not self._timer.isActive():
             self._timer.start(20)
-        self._schedule_smooth_outline()
+        self._schedule_fine()
+
+    def _set_overlay(self, layer, data: np.ndarray, ds: int, side: bool = False) -> None:
+        """Show ``data`` (sampled every ``ds`` full-resolution pixels) on ``layer``."""
+        off = (ds - 1) / 2
+        scale = (float(ds), float(ds))
+        translate = (off, off + (self._side_dx if side else 0.0))
+        if tuple(layer.scale) != scale:
+            layer.scale = scale
+        if tuple(layer.translate) != translate:
+            layer.translate = translate
+        layer.data = data
 
     def _refresh_overlay(self) -> None:
-        """Cheap, always-live refresh: atlas sampling, region colours, raster outline.
+        """Cheap, always-live refresh at preview resolution: atlas sampling, region
+        colours, raster outline.
 
         Kept fast enough to run on every tick while a slider is being dragged (unlike
-        the smooth outline, see ``_refresh_smooth_outline``).
+        the full-resolution smooth outline, see ``_refresh_fine``).
         """
         self.tf = SliceTransform(self.alignment)
         labels, tmpl = warp_atlas(self.tf, self.atlas, self.preview.shape[:2], self.ds)
@@ -230,32 +247,40 @@ class SliceView:
         self.side_template_layer.data = tmpl
         if not self._display.get("smooth", True):
             outline = self._raster_outline(labels)
-            self.outline_layer.data = outline
-            self.side_outline_layer.data = outline
+            self._set_overlay(self.outline_layer, outline, self.ds)
+            self._set_overlay(self.side_outline_layer, outline, self.ds, side=True)
 
     def _raster_outline(self, labels: np.ndarray) -> np.ndarray:
         outlines = cv2.dilate(boundaries(labels).astype(np.uint8), np.ones((2, 2), np.uint8))
-        return outlines.astype(np.float32)
+        return outlines * np.uint8(255)
 
-    def _schedule_smooth_outline(self) -> None:
+    def _schedule_fine(self) -> None:
         if self._display.get("smooth", True):
             self._smooth_timer.start(SMOOTH_OUTLINE_DEBOUNCE_MS)
 
-    def _refresh_smooth_outline(self) -> None:
-        """Sub-pixel contour outline: fits every region boundary, which is too slow
-        to run on every tick, so this only runs once the alignment/display settings
-        have stopped changing for ``SMOOTH_OUTLINE_DEBOUNCE_MS``."""
-        if not self._display.get("smooth", True):
-            return
+    def _refresh_fine(self) -> None:
+        """Sub-pixel smooth outline at full image resolution: fits every region
+        boundary, which is too slow to run on every tick, so this only runs once the
+        alignment/display settings have stopped changing for
+        ``SMOOTH_OUTLINE_DEBOUNCE_MS``.
+
+        Region colours and the template stay at preview resolution: that is already
+        finer than the 25 um atlas voxels they are sampled from."""
         d = self._display
+        if not d.get("smooth", True):
+            return
+        fds, shape = self._fine_ds, self._fine_shape
+        tf = SliceTransform(self.alignment)
         al = self.alignment
         contours_um = self.atlas.plane_contours(al.ap_um, al.pitch_deg, al.yaw_deg,
                                                  d.get("sigma", 1.0))
-        off = (self.ds - 1) / 2
-        contours_prev = [(self.tf.plane_to_image(c) - off) / self.ds for c in contours_um]
-        outline = draw_outlines(contours_prev, self.preview.shape[:2], width=d.get("width", 2.0))
-        self.outline_layer.data = outline
-        self.side_outline_layer.data = outline
+        off = (fds - 1) / 2
+        contours = [(tf.plane_to_image(c) - off) / fds for c in contours_um]
+        # The width setting is in preview pixels.
+        width = d.get("width", 2.0) * self.ds / fds
+        outline = draw_outlines(contours, shape, width=width, supersample=2)
+        self._set_overlay(self.outline_layer, outline, fds)
+        self._set_overlay(self.side_outline_layer, outline, fds, side=True)
 
     # ------------------------------------------------------------- display
     def set_outlines_visible(self, visible: bool) -> None:
@@ -300,7 +325,7 @@ class SliceView:
     def _display_changed(self) -> None:
         if not self._timer.isActive():
             self._timer.start(20)
-        self._schedule_smooth_outline()
+        self._schedule_fine()
 
     def auto_fit(self) -> None:
         al = self.alignment
@@ -579,6 +604,25 @@ class SliceView:
             self.align_widget.landmark_mode.setChecked(False)
             self.landmarks.visible = False
             self.set_cell_mode("add")
+
+    def _route_click(self, viewer, event) -> None:
+        """Send image clicks to the current tab's tool (landmarks / cell marking).
+
+        napari only passes clicks to the layer selected in the layer list, so picking
+        an image channel there (e.g. to change its contrast) would otherwise silently
+        disable landmarks, Shift+drag and cell marking. Viewer callbacks run before
+        the active layer's, so switching it here still delivers this click."""
+        if event.type != "mouse_press":
+            return
+        layers = viewer.layers.selection
+        if self.tabs.currentIndex() == 0:
+            if (self.landmark_mode or "Shift" in event.modifiers) and \
+                    layers.active is not self.landmarks:
+                layers.active = self.landmarks
+        else:
+            current = self.cell_layers.get(self._current_type)
+            if current is not None and layers.active not in self.cell_layers.values():
+                layers.active = current
 
     def _on_mouse_move(self, viewer, event) -> None:
         y, x = event.position[-2:]

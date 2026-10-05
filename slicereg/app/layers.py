@@ -20,7 +20,7 @@ DISPLAY_DEFAULTS = {
 
 
 def outline_colormap(rgb) -> Colormap:
-    """Transparent -> ``rgb`` colormap for the (0..1) outline canvas."""
+    """Transparent -> ``rgb`` colormap for the outline canvas."""
     r, g, b = (float(v) for v in rgb)
     return Colormap([[0.0, 0.0, 0.0, 0.0], [r, g, b, 1.0]])
 

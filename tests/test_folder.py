@@ -1,6 +1,7 @@
 import json
 
 import numpy as np
+import pandas as pd
 import pytest
 import tifffile
 
@@ -81,15 +82,39 @@ def test_folder_project_imports_sections(tmp_path):
     assert project.sync_folder() == [1, 2]
     project.import_section(1)
     s = project.get_slice(1)
-    assert s["pixel_um"] == 2.5 and s["size"] == [400, 300]
-    assert project.load_image(1).shape == (300, 400, 2)
-    mask = project.load_mask(1)
-    assert mask[150, 200] and not mask[5, 5]
+    x0, y0, x1, y1 = s["crop"]
+    assert s["pixel_um"] == 2.5 and 20 < x0 < 120 and 20 < y0 < 110 and x1 == 400 and y1 == 300
+    img = project.load_image(1)
+    assert img.shape == (y1 - y0, x1 - x0, 2) and s["size"] == [x1 - x0, y1 - y0]
+    assert img[150 - y0, 200 - x0, 1] == 120
+    assert project.load_mask(1)[150 - y0, 200 - x0]
 
     (folder / "c2_r1_MIP.tif").write_bytes((folder / "c1_r1_MIP.tif").read_bytes())
     assert project.sync_folder() == [2, 3]
     assert {s["name"]: s["id"] for s in project.slices} == {"c1_r1": 1, "c1_r2": 2, "c2_r1": 3}
     assert Project.open_or_create(folder).root == project.root
+
+
+def test_turning_auto_crop_off_reimports_and_moves_cells(tmp_path):
+    folder = tmp_path / "scans"
+    folder.mkdir()
+    config = {"pattern": r"c(?P<col>\d+)_r(?P<row>\d+)_MIP\.tif$", "pixel_um": 2.5}
+    (folder / CONFIG_NAME).write_text(json.dumps(config))
+    img = np.zeros((2, 300, 400), np.uint8)
+    img[1, 110:290, 120:390] = 120
+    tifffile.imwrite(folder / "c1_r1_MIP.tif", img, metadata={"axes": "CYX"})
+    project = Project.open_or_create(folder)
+    project.import_section(1)
+    x0, y0 = project.get_slice(1)["crop"][:2]
+    project.save_cells(1, pd.DataFrame({"x_px": [200.0 - x0], "y_px": [150.0 - y0]}))
+
+    (folder / CONFIG_NAME).write_text(json.dumps({**config, "auto_crop": False}))
+    assert project.sync_folder() == [1]
+    project.import_section(1)
+    assert project.get_slice(1)["crop"] == [0, 0, 400, 300]
+    cells = project.load_cells(1)
+    assert (cells.loc[0, "x_px"], cells.loc[0, "y_px"]) == (200.0, 150.0)
+    assert project.sync_folder() == []
 
 
 def test_folder_without_matching_files_explains(tmp_path):

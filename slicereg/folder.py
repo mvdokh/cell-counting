@@ -20,6 +20,7 @@ DEFAULT_CONFIG = {
     "order": "column",
     "channels": [{"name": "rfp", "color": "red"}, {"name": "nissl", "color": "blue"}],
     "align_channel": "nissl",
+    "auto_crop": True,
     "pixel_um": None,
     "atlas": "allen_mouse_25um",
     "section_spacing_um": 100.0,
@@ -31,6 +32,8 @@ CONFIG_HELP = {
              "'row' = along each row (c1_r1, c2_r1, ...); used to guess AP positions",
     "channels": "one entry per image channel, in file order; color is a napari colormap",
     "align_channel": "channel shown to DeepSlice (null = all channels)",
+    "auto_crop": "crop each image to its main section and blank bits of neighbouring "
+                 "sections (true/false)",
     "pixel_um": "pixel size in microns; null = read it from each file",
 }
 
