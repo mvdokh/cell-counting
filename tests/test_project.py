@@ -58,3 +58,25 @@ def test_detect_crop_align_count_move_export(project, atlas):
     all_cells = pd.read_csv(project.root / "cells_all.csv")
     assert len(all_cells) == 1
     assert (project.root / "region_counts.csv").exists()
+    top = pd.read_csv(project.root / "top_regions.csv")
+    assert list(top["region_acronym"]) == [all_cells.loc[0, "region_acronym"]]
+    assert top.loc[0, "cells"] == 1 and top.loc[0, "percent_of_cells"] == 100.0
+    assert (project.root / "top_regions.png").stat().st_size > 0
+
+
+def test_top_regions_ranks_by_count():
+    from slicereg.export import top_regions
+
+    cells = pd.DataFrame({
+        "cell_type": ["rfp", "rfp", "rfp", "gfp", "rfp", "rfp"],
+        "region_acronym": ["IRN", "IRN", "PARN", "IRN", "outside", "PARN"],
+        "region_name": ["Intermediate", "Intermediate", "Parvicellular", "Intermediate",
+                        "Outside atlas", "Parvicellular"],
+        "hemisphere": ["left", "right", "left", "left", "", "left"],
+    })
+    top = top_regions(cells)
+    assert list(top["region_acronym"]) == ["IRN", "PARN"]
+    assert list(top["rank"]) == [1, 2] and list(top["cells"]) == [3, 2]
+    assert list(top["left"]) == [2, 2] and list(top["right"]) == [1, 0]
+    assert list(top["cells_rfp"]) == [2, 2] and list(top["cells_gfp"]) == [1, 0]
+    assert top.loc[0, "percent_of_cells"] == 50.0

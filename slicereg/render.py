@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .export import CELL_COLORS, collect_cells
+from .export import CELL_COLORS, NOT_REGIONS, collect_cells
 from .transform import Alignment, SliceTransform
 
 # Common Paxinos & Franklin abbreviations -> Allen CCF acronyms. Checked before the
@@ -41,6 +41,8 @@ VIEWS = {
     "right": ((0, 0, 1), (0, -1, 0)),
     "top": ((0, -1, 0), (-1, 0, 0)),
     "bottom": ((0, 1, 0), (-1, 0, 0)),
+    "back_low": ((1, 0.21, 0), (0, -1, 0)),
+    "back_low_zoom": ((1, 0.21, 0), (0, -1, 0)),
 }
 VIEW_LABELS = {
     "three_quarter": "3/4 view",
@@ -50,7 +52,14 @@ VIEW_LABELS = {
     "right": "Right (sagittal)",
     "top": "Top (dorsal)",
     "bottom": "Bottom (ventral)",
+    "back_low": "Back, low (IRt/PCRt)",
+    "back_low_zoom": "Back, low, zoomed",
 }
+# Views aimed at the caudal end of these regions (Allen IRt, PCRt) rather than the
+# brain's centre; True = frame the regions instead of the whole brain.
+TARGET_REGIONS = ("IRN", "PARN")
+TARGET_VIEWS = {"back_low": False, "back_low_zoom": True}
+TARGET_TIP_UM = 300.0
 DEFAULT_CHANNEL_COLORS = {1: ["gray"], 2: ["green", "magenta"], 3: ["red", "green", "blue"]}
 WINDOW_SIZE = (1600, 1200)
 SCREENSHOT_SCALE = 2
@@ -153,21 +162,72 @@ def slice_mesh(atlas, project, sid: int, grid: int = 24):
     return mesh
 
 
+_target_cache: dict = {}
+
+
+def region_target(atlas, acronyms=TARGET_REGIONS,
+                  tip_um: float = TARGET_TIP_UM) -> tuple[np.ndarray, np.ndarray] | None:
+    """(caudal tip centre, (3, 2) bounds) of the regions, in brainrender's rendered
+    axes (x = posterior, y = ventral, z = -ML). The tip is the centroid of the
+    voxels within ``tip_um`` of the regions' most posterior point."""
+    key = (atlas.atlas_name, tuple(acronyms), tip_um)
+    if key not in _target_cache:
+        ids = set()
+        for acr in acronyms:
+            try:  # StructuresDict looks up acronyms but `in` only sees ids
+                ids.add(atlas.structures[acr]["id"])
+                ids |= {atlas.structures[d]["id"] for d in atlas.get_structure_descendants(acr)}
+            except KeyError:
+                continue
+        ann = np.asarray(atlas.annotation)
+        idx = np.argwhere(np.isin(ann, list(ids))) if ids else np.empty((0, 3))
+        if not len(idx):
+            _target_cache[key] = None
+        else:
+            pts = idx * np.asarray(atlas.resolution, float) * [1, 1, -1]
+            tip = pts[pts[:, 0] >= pts[:, 0].max() - tip_um].mean(axis=0)
+            _target_cache[key] = (tip, np.stack([pts.min(axis=0), pts.max(axis=0)], 1))
+    return _target_cache[key]
+
+
 def view_camera(scene, view: str, aspect: float = WINDOW_SIZE[0] / WINDOW_SIZE[1],
                 view_angle: float = 30.0, margin: float = 1.08) -> dict:
-    """Camera looking at the whole brain from one of ``VIEWS``, zoomed to fit it."""
-    bounds = np.asarray(scene.root._mesh.bounds(), float).reshape(3, 2)
-    centre = bounds.mean(axis=1)
+    """Camera looking at the whole brain from one of ``VIEWS``, zoomed to fit it.
+
+    ``TARGET_VIEWS`` look at the caudal tip of ``TARGET_REGIONS`` instead of the
+    brain's centre, framing either the whole brain or just those regions."""
+    def corners(b):
+        return np.array([[x, y, z] for x in b[0] for y in b[1] for z in b[2]])
+
+    brain = np.asarray(scene.root._mesh.bounds(), float).reshape(3, 2)
+    bounds, centre = brain, brain.mean(axis=1)
+    target = None
+    if view in TARGET_VIEWS and getattr(scene, "atlas", None) is not None:
+        target = region_target(scene.atlas)
+        if target is not None:
+            centre = target[0]
+            if TARGET_VIEWS[view]:
+                bounds = target[1]
     direction, up = (np.asarray(v, float) for v in VIEWS[view])
     direction /= np.linalg.norm(direction)
     up = up - up.dot(direction) * direction
     up /= np.linalg.norm(up)
     right = np.cross(up, direction)
-    corners = np.array([[x, y, z] for x in bounds[0] for y in bounds[1] for z in bounds[2]])
-    rel = corners - centre
-    half_h = max(np.abs(rel @ up).max(), np.abs(rel @ right).max() / aspect) * margin
-    distance = half_h / np.tan(np.radians(view_angle) / 2) + (rel @ direction).max()
-    radius = np.linalg.norm(rel, axis=1).max()
+
+    def fit(focal):
+        """Closest distance at which every corner of the box projects inside the frame."""
+        rel = corners(bounds) - focal
+        off_axis = np.maximum(np.abs(rel @ up), np.abs(rel @ right) / aspect) * margin
+        return rel, (rel @ direction + off_axis / np.tan(np.radians(view_angle) / 2)).max()
+
+    rel, distance = fit(centre)
+    if target is not None:  # same angle, but slide sideways to centre the box in frame
+        depth = distance - rel @ direction
+        for axis in (up, right):
+            a = (rel @ axis) / depth
+            centre = centre + axis * (a.max() + a.min()) / 2 * distance
+        rel, distance = fit(centre)
+    radius = np.linalg.norm(corners(brain) - centre, axis=1).max()
     return {"pos": tuple(centre + direction * distance), "focal_point": tuple(centre),
             "viewup": tuple(up), "clipping_range": (max(1.0, distance - 2 * radius),
                                                     distance + 2 * radius)}
@@ -215,7 +275,7 @@ def build_scene(project, show_slices: bool = True, top_regions: int = 5,
         if missing:
             print(f"Unknown structures (skipped): {', '.join(missing)}")
     if top_regions and len(cells):
-        inside = cells[~cells["region_acronym"].isin(["outside", "root"])]
+        inside = cells[~cells["region_acronym"].isin(NOT_REGIONS)]
         shown = {acr for acr, _ in regions}
         regions += [(a, None) for a in inside["region_acronym"].value_counts().index[:top_regions]
                     if a not in shown]

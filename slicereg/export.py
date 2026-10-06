@@ -45,6 +45,51 @@ def collect_cells(project) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
+NOT_REGIONS = ("outside", "root")
+
+
+def top_regions(cells: pd.DataFrame) -> pd.DataFrame:
+    """Regions ranked by cell count (all slices), with each hemisphere's and cell
+    type's share. Cells outside the atlas or in no specific region are left out of the
+    ranking but still count towards ``percent_of_cells``."""
+    columns = ["rank", "region_acronym", "region_name", "cells", "percent_of_cells",
+               "left", "right"]
+    inside = cells[~cells["region_acronym"].isin(NOT_REGIONS)]
+    if inside.empty:
+        return pd.DataFrame(columns=columns)
+    keys = ["region_acronym", "region_name"]
+    table = inside.groupby(keys).size().rename("cells").to_frame()
+    hemi = inside.groupby(keys + ["hemisphere"]).size().unstack(fill_value=0)
+    for side in ("left", "right"):
+        table[side] = hemi[side] if side in hemi else 0
+    types = inside["cell_type"].astype(str)
+    if types.nunique() > 1:
+        per_type = inside.groupby(keys + [types]).size().unstack(fill_value=0)
+        table = table.join(per_type.add_prefix("cells_"))
+    table = table.reset_index().sort_values(["cells", "region_acronym"],
+                                            ascending=[False, True], ignore_index=True)
+    table.insert(0, "rank", np.arange(1, len(table) + 1))
+    table.insert(4, "percent_of_cells", (100 * table["cells"] / len(cells)).round(2))
+    return table
+
+
+def save_region_bar_plot(top: pd.DataFrame, path) -> None:
+    """Bar plot of cells per region, in ``top_regions`` order."""
+    from matplotlib.figure import Figure
+
+    fig = Figure(figsize=(max(4.0, 0.45 * len(top) + 1.5), 4.0), layout="constrained")
+    ax = fig.subplots()
+    ax.bar(top["region_acronym"].astype(str), top["cells"], color="0.35")
+    ax.set_ylabel("Cells")
+    ax.set_xlabel("Region")
+    ax.tick_params(axis="x", rotation=45)
+    for label in ax.get_xticklabels():
+        label.set_horizontalalignment("right")
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.margins(x=0.01)
+    fig.savefig(path, dpi=300)
+
+
 def export_project(project) -> str:
     cells = collect_cells(project)
     cells.to_csv(project.root / "cells_all.csv", index=False)
@@ -54,7 +99,12 @@ def export_project(project) -> str:
              .assign(slice_id="all"))[keys + ["count"]]
     counts = pd.concat([per_slice, total], ignore_index=True)
     counts.to_csv(project.root / "region_counts.csv", index=False)
+    top = top_regions(cells)
+    top.to_csv(project.root / "top_regions.csv", index=False)
+    written = ["cells_all.csv", "region_counts.csv", "top_regions.csv"]
+    if len(top):
+        save_region_bar_plot(top, project.root / "top_regions.png")
+        written.append("top_regions.png")
     counted = sum(project.status(s["id"])["counted"] for s in project.slices)
     return (f"{len(cells)} cells from {counted}/{len(project.slices)} slices.\n"
-            f"Wrote {project.root / 'cells_all.csv'}\n"
-            f"and {project.root / 'region_counts.csv'}")
+            f"Wrote {', '.join(written)} in\n{project.root}")

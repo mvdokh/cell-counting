@@ -168,7 +168,10 @@ Options for `open`:
    cell type), the whole brain, axes / scale bars (off by default), the small
    orientation brain in the corner and the title. The last choices are remembered.
    In the 3D window, buttons on the left snap the camera to a 3/4, front, back, left,
-   right, top or bottom view. *Hide title* / *Show title* toggles the title, for
+   right, top or bottom view. *Back, low* looks from behind and about 12 degrees
+   below, aimed at the caudal end of IRt/PCRt, with the whole brain in frame. *Back,
+   low, zoomed* uses the same angle but frames just IRt/PCRt. Both work whether or
+   not those structures are shown. *Hide title* / *Show title* toggles the title, for
    example before saving. *Save image* asks where to save a PNG at twice the window
    resolution (default folder `renders` in the project).
 
@@ -190,9 +193,16 @@ slicereg export "C:\path\to\slide_project"
 slicereg render "C:\path\to\slide_project"
 ```
 
-`export` writes `cells_all.csv` (every cell with atlas coordinates and region) and
-`region_counts.csv` (counts per slice, cell type, region and hemisphere) into the
-project folder.
+`export` (or *Export all cells (CSV)* in the slide view) writes these files into the
+project folder:
+- `cells_all.csv` has every cell with its atlas coordinates and region.
+- `region_counts.csv` has counts per slice, cell type, region and hemisphere.
+- `top_regions.csv` ranks the regions by total cell count. Each row has the cell count,
+  its percentage of all cells, the left and right hemisphere counts, and with several
+  cell types a `cells_<type>` column for each. Cells outside the atlas or in `root`
+  aren't ranked but still count towards the percentages. The 3D view's top regions use
+  the same ranking.
+- `top_regions.png` is a bar plot of the cell count per region, in the same order.
 
 `render` options:
 
@@ -207,7 +217,7 @@ project folder.
 | `--no-brain` | Hide the transparent whole brain |
 | `--brain-alpha A` | Whole-brain opacity, 0-1 (default 0.3) |
 | `--style S` | `plastic` (default), `shiny`, `glossy`, `metallic` or `cartoon` |
-| `--view V` | Starting view: `three_quarter` (default), `front`, `back`, `left`, `right`, `top`, `bottom` |
+| `--view V` | Starting view: `three_quarter` (default), `front`, `back`, `left`, `right`, `top`, `bottom`, `back_low`, `back_low_zoom` |
 | `--axes` | Show axes / scale bars |
 | `--no-inset` | Hide the small orientation brain in the corner |
 | `--cell-size UM` | Radius of the cell spheres in microns (default 25) |
@@ -234,6 +244,8 @@ slide_project/
     cells.csv           # counted cells
   cells_all.csv         # after export
   region_counts.csv     # after export
+  top_regions.csv       # after export
+  top_regions.png       # after export
 ```
 
 ## Tests

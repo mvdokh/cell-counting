@@ -1,6 +1,6 @@
 import numpy as np
 
-from slicereg.render import (VIEWS, parse_color, resolve_regions, split_color,
+from slicereg.render import (VIEWS, parse_color, region_target, resolve_regions, split_color,
                              split_region_text, suggest_regions, view_camera)
 
 STRUCTURES = [
@@ -80,3 +80,33 @@ def test_view_camera_frames_the_brain_from_each_side():
     side = np.linalg.norm(np.array(view_camera(_Scene, "left")["pos"]) - centre)
     front = np.linalg.norm(np.array(view_camera(_Scene, "front")["pos"]) - centre)
     assert side > front
+
+
+class _Atlas:
+    atlas_name = "fake"
+    resolution = (100.0, 100.0, 100.0)
+    structures = {"IRN": {"id": 7}, "PARN": {"id": 8}}
+    annotation = np.zeros((20, 10, 12), np.int32)
+    annotation[5:15, 6:8, 2:4] = 7
+    annotation[5:12, 6:8, 8:10] = 8
+
+    def get_structure_descendants(self, acronym):
+        return []
+
+
+def test_target_views_look_at_the_caudal_tip():
+    tip, bounds = region_target(_Atlas(), tip_um=0.0)
+    assert np.allclose(tip, [1400, 650, -250])          # last IRN slab, ML flipped to -z
+    assert np.allclose(bounds, [[500, 1400], [600, 700], [-900, -200]])
+
+    class Scene(_Scene):
+        atlas = _Atlas()
+
+    whole, zoomed = view_camera(Scene, "back_low"), view_camera(Scene, "back_low_zoom")
+    offset = np.array(whole["pos"]) - whole["focal_point"]
+    d = offset / np.linalg.norm(offset)
+    shift = np.array(whole["focal_point"]) - region_target(Scene.atlas)[0]
+    assert abs(shift @ d) < 1e-6                         # only slid sideways off the tip
+    assert offset[0] > 0 and offset[1] > 0               # behind and below, looking up
+    assert np.linalg.norm(np.array(zoomed["pos"]) - zoomed["focal_point"]) < \
+        np.linalg.norm(offset)

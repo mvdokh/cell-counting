@@ -28,7 +28,7 @@ def main(argv=None) -> None:
     p_open.add_argument("--spacing", type=float,
                         help="section spacing in um used to guess the next slice's AP position")
 
-    p_export = sub.add_parser("export", help="write cells_all.csv and region_counts.csv")
+    p_export = sub.add_parser("export", help="write cells_all.csv, region_counts.csv and top_regions.csv")
     p_export.add_argument("project")
 
     p_render = sub.add_parser("render", help="show aligned slices and cells in brainrender")
