@@ -5,7 +5,6 @@ from __future__ import annotations
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (QCheckBox, QDoubleSpinBox, QFormLayout, QHBoxLayout, QLabel,
                             QPushButton, QSlider, QVBoxLayout, QWidget)
-
 # Approximate CCF AP coordinate of bregma, only used for the hint label.
 BREGMA_AP_UM = 5400.0
 
@@ -45,6 +44,12 @@ class AlignWidget(QWidget):
         self.bregma = QLabel()
         self.lock = QCheckBox("Lock aspect ratio (scale X and Y together)")
         self.flip = QCheckBox("Mirror atlas left/right")
+        sides = view.slice.get("hemispheres")
+        if sides:
+            self.flip.setEnabled(False)
+            self.flip.setToolTip(
+                f"Set from the hemispheres file ({sides} in the original image): the image "
+                "is stored with the right hemisphere on the left, like the atlas.")
 
         form = QFormLayout()
         form.addRow("AP position", self.spins["ap_um"])

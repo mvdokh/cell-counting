@@ -77,7 +77,8 @@ their names mean:
 | `align_channel` | `nissl` | Channel DeepSlice sees |
 | `auto_crop` | `true` | Crop each image to its main section and blank bits of neighbouring sections |
 | `pixel_um` | `null` | Pixel size in microns; `null` reads it from the file |
-| `atlas`, `section_spacing_um` | `allen_mouse_25um`, 100 | Used when the project is created |
+| `hemispheres` | `hemispheres.csv` | Optional CSV in the image folder saying which hemisphere is on each image's left and right (see below) |
+| `atlas`, `section_spacing_um` | `allen_mouse_25um`, 80 | Used when the project is created |
 
 The slide view then shows every section at true size in its column/row, cropped to
 its tissue and with each section's brightness stretched separately so sections
@@ -88,13 +89,33 @@ that were saved as separate tiles are stitched from the tile positions in the fi
 Click *Rescan folder* after editing the config or adding images; existing sections
 keep their alignments and cells.
 
+**Hemispheres.** Sections can land on the slide either way up, so some images show the
+right hemisphere on the left and others the left. List them in `hemispheres.csv` in
+the image folder, with the hemisphere on the image's left in `x1` and on its right in
+`x2` (`L`/`R`; names are matched ignoring case, `_` and `-`):
+
+```text
+slice,x1,x2
+c4_r1,L,R
+c4_r2,R,L
+```
+
+Every section is then stored with the right hemisphere on the image's left, like the
+atlas: `L,R` sections are mirrored left-right when imported or when you click *Rescan
+folder*. Alignments, landmarks and cells are mirrored with the image, so the atlas
+outline stays on the same tissue. Where an existing alignment had the atlas's
+hemispheres the wrong way round, the atlas is mirrored too. Its outline doesn't move,
+but left and right swap and the cells' hemisphere follows. For sections in the file,
+*Mirror atlas left/right* is locked because the file already decides it. Export again
+after a rescan that mirrors sections.
+
 Options for `open`:
 
 | Option | Meaning |
 | --- | --- |
 | `--project DIR` | Put the project folder somewhere else |
 | `--atlas NAME` | BrainGlobe atlas for a new project, e.g. `allen_mouse_10um` |
-| `--spacing UM` | Section spacing in microns, used to guess the next slice's AP position |
+| `--spacing UM` | Section spacing (thickness) in microns, used to guess an unaligned section's AP position from its aligned neighbours in slide order |
 
 ## Workflow
 
@@ -131,17 +152,34 @@ Options for `open`:
    affect the saved coordinates).
 7. Click **Save (alignment + cells)**. Use *< Prev* / *Next >* to move between
    sections and *Slide* to return to the overview.
-8. Back in the slide view, click **Export all cells (CSV)** or
+8. Back in the slide view, click **Plot AP & pitch per section** to compare the
+   alignments with each other. The top plot shows each section's AP position (um) in
+   slide order. Consecutive sections should step evenly, by the section thickness. The
+   bottom plot shows each section's pitch, which should be a flat line because every
+   section from one brain was cut at the same angle. Click a point to open that
+   section, and use the toolbar to zoom or save the figure. Then click
+   **Export all cells (CSV)** or
    **3D view in brainrender**. The 3D view button opens an options dialog: type the
    structures to show (see below), choose how many top regions by cell count to add,
-   the structure opacity and hemisphere, and whether to show section images, cells
-   (per cell type) and the whole-brain outline. The last choices are remembered.
+   the structure opacity and hemisphere, the whole-brain opacity, the surface style
+   (smooth by default; *Cartoon* is brainrender's flat outlined look), the starting
+   view, the cell size (sphere radius in um, 25 by default; cells are always drawn
+   matte, whatever the surface style), and whether to show section images, cells (per
+   cell type), the whole brain, axes / scale bars (off by default), the small
+   orientation brain in the corner and the title. The last choices are remembered.
+   In the 3D window, buttons on the left snap the camera to a 3/4, front, back, left,
+   right, top or bottom view. *Hide title* / *Show title* toggles the title, for
+   example before saving. *Save image* asks where to save a PNG at twice the window
+   resolution (default folder `renders` in the project).
 
 Structure names can be Allen CCF acronyms (case doesn't matter) or these Paxinos
 abbreviations: IRt, PCRt, 12N, Mo5/5N, Pe5/peri5, Acs5/acc5, 7N/fmn. Separate them with
-spaces, commas or slashes, e.g. `irt/pcrt xii mo5 peri5 acc5 fmn`. The dialog shows
-what each name resolves to (for example `peri5 → P5 (Peritrigeminal zone)`) and
-suggests matches for names it doesn't know.
+spaces, commas or slashes, e.g. `irt/pcrt xii mo5 peri5 acc5 fmn`. Add `:colour` to
+give a structure its own colour instead of the atlas one, e.g. `irt:red pcrt:#3080ff
+xii:gold mo5`; colours are names (`red`, `steelblue`, `gold`, ...) or hex codes, and
+*Colour...* picks one for the last structure in the list. The dialog shows what each
+name resolves to (for example `peri5 → P5 (Peritrigeminal zone)`) with a swatch of its
+colour, and suggests matches for names it doesn't know.
 
 ## Command-line export and 3D view
 
@@ -160,14 +198,21 @@ project folder.
 
 | Option | Meaning |
 | --- | --- |
-| `--structures NAME ...` | Structures to show, e.g. `--structures irt/pcrt xii mo5 peri5 acc5 fmn` |
+| `--structures NAME ...` | Structures to show, optionally coloured, e.g. `--structures irt:red pcrt:#3080ff xii mo5` |
 | `--regions N` | Also show the N regions with the most cells (default 5, 0 for none) |
 | `--alpha A` | Structure opacity, 0-1 (default 0.3) |
 | `--hemisphere left/right/both` | Which side of the structures to draw |
 | `--no-slices` | Hide section images |
 | `--no-cells` / `--cell-types T ...` | Hide all cells, or show only these cell types |
-| `--no-brain` | Hide the transparent whole-brain outline |
-| `--screenshot out.png` | Save an image instead of opening a window |
+| `--no-brain` | Hide the transparent whole brain |
+| `--brain-alpha A` | Whole-brain opacity, 0-1 (default 0.3) |
+| `--style S` | `plastic` (default), `shiny`, `glossy`, `metallic` or `cartoon` |
+| `--view V` | Starting view: `three_quarter` (default), `front`, `back`, `left`, `right`, `top`, `bottom` |
+| `--axes` | Show axes / scale bars |
+| `--no-inset` | Hide the small orientation brain in the corner |
+| `--cell-size UM` | Radius of the cell spheres in microns (default 25) |
+| `--no-title` | Hide the title at the top |
+| `--screenshot out.png` | Save an image (2x resolution) instead of opening a window |
 
 For example, only the orofacial brainstem nuclei and cells, without sections:
 

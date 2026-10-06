@@ -23,7 +23,8 @@ DEFAULT_CONFIG = {
     "auto_crop": True,
     "pixel_um": None,
     "atlas": "allen_mouse_25um",
-    "section_spacing_um": 100.0,
+    "section_spacing_um": 80.0,
+    "hemispheres": "hemispheres.csv",
 }
 CONFIG_HELP = {
     "pattern": "regular expression matched against file names; named groups 'col' and "
@@ -35,6 +36,12 @@ CONFIG_HELP = {
     "auto_crop": "crop each image to its main section and blank bits of neighbouring "
                  "sections (true/false)",
     "pixel_um": "pixel size in microns; null = read it from each file",
+    "section_spacing_um": "AP distance between consecutive sections in cutting order "
+                          "(section thickness); only used when the project is created",
+    "hemispheres": "optional CSV in this folder with columns slice,x1,x2: which "
+                   "hemisphere (L/R) is on the image's left (x1) and right (x2). Sections "
+                   "with the left hemisphere on the image's left are mirrored so every "
+                   "section has the right hemisphere on the left, like the atlas",
 }
 
 
@@ -62,6 +69,36 @@ def find_sections(folder: Path, config: dict) -> list[dict]:
     key = (lambda s: (s["row"], s["col"])) if config["order"] == "row" else \
         (lambda s: (s["col"], s["row"]))
     return sorted(found, key=key)
+
+
+def _name_key(name: str) -> str:
+    """'c4_r1', 'C4R1', 'c4-r1' -> 'c4r1'."""
+    return re.sub(r"[^0-9a-z]", "", str(name).lower())
+
+
+def load_hemispheres(folder: Path, config: dict) -> dict[str, str]:
+    """{section name key: 'L,R' or 'R,L'} (image left, image right) from the config's
+    hemispheres CSV; empty if there is none."""
+    name = config.get("hemispheres")
+    p = Path(folder) / name if name else None
+    if p is None or not p.is_file():
+        return {}
+    import pandas as pd
+
+    df = pd.read_csv(p, dtype=str)
+    cols = {c.strip().lower(): c for c in df.columns}
+    missing = [c for c in ("slice", "x1", "x2") if c not in cols]
+    if missing:
+        raise ValueError(f"{p} needs columns slice, x1, x2 (missing {', '.join(missing)})")
+    out = {}
+    for _, row in df.iterrows():
+        x1 = str(row[cols["x1"]]).strip().upper()[:1]
+        x2 = str(row[cols["x2"]]).strip().upper()[:1]
+        if {x1, x2} != {"L", "R"}:
+            raise ValueError(f"{p}: row {row[cols['slice']]!r} should have L and R in x1/x2, "
+                             f"got {x1!r}, {x2!r}")
+        out[_name_key(row[cols["slice"]])] = f"{x1},{x2}"
+    return out
 
 
 def grid_layout(sizes: dict[int, tuple[int, int, float, float]],

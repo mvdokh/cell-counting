@@ -55,8 +55,27 @@ class FolderView(SlideView):
 
     def _import_missing(self) -> None:
         to_import = self.project.sync_folder()
-        if not to_import:
-            return
+        if to_import:
+            self._import(to_import)
+        error = getattr(self.project, "hemisphere_error", None)
+        if error:
+            QMessageBox.warning(None, "Hemispheres file not used",
+                                f"{error}\n\nSection orientation "
+                                "was left as it was.")
+        self.viewer.status = "Checking section orientation..."
+        QApplication.processEvents()
+        changed = self.project.apply_hemispheres()
+        if changed:
+            names = ", ".join(self.project.get_slice(sid).get("name", str(sid))
+                              for sid in changed)
+            QMessageBox.information(
+                None, "Sections mirrored",
+                f"Updated {len(changed)} section(s) from the hemispheres file so the right "
+                f"hemisphere is on the left of every image, as in the atlas: {names}.\n\n"
+                "Alignments, landmarks and cells were mirrored along with the images; "
+                "export again to update the CSVs.")
+
+    def _import(self, to_import: list[int]) -> None:
         dlg = QProgressDialog("Importing sections...", None, 0, len(to_import))
         dlg.setWindowModality(Qt.WindowModal)
         dlg.setMinimumDuration(0)
@@ -177,7 +196,8 @@ class FolderView(SlideView):
         open_btn = QPushButton("Open selected section")
         open_btn.clicked.connect(self._on_open_selected)
         lay.addWidget(open_btn)
-        for text, slot in [("Export all cells (CSV)", self._on_export),
+        for text, slot in [("Plot AP && pitch per section", self._on_plot),
+                           ("Export all cells (CSV)", self._on_export),
                            ("3D view in brainrender", self._on_render)]:
             b = QPushButton(text)
             b.clicked.connect(slot)

@@ -102,7 +102,8 @@ class SlideView:
         open_btn = QPushButton("Open selected section")
         open_btn.clicked.connect(self._on_open_selected)
         lay.addWidget(open_btn)
-        for text, slot in [("Export all cells (CSV)", self._on_export),
+        for text, slot in [("Plot AP && pitch per section", self._on_plot),
+                           ("Export all cells (CSV)", self._on_export),
                            ("3D view in brainrender", self._on_render)]:
             b = QPushButton(text)
             b.clicked.connect(slot)
@@ -116,7 +117,7 @@ class SlideView:
         if not st["cropped"]:
             parts.append("not imported" if self.project.is_folder else "not cropped")
         if st["aligned"]:
-            parts.append("aligned")
+            parts.append(f"aligned, AP {self.project.load_alignment(sid)['ap_um']:.0f} um")
         if st["counted"]:
             cells = self.project.load_cells(sid)
             parts.append(f"{0 if cells is None else len(cells)} cells")
@@ -243,6 +244,12 @@ class SlideView:
     def _on_export(self) -> None:
         summary = export_project(self.project)
         QMessageBox.information(None, "Export", summary)
+
+    def _on_plot(self) -> None:
+        from .positions_plot import PositionsPlot
+
+        PositionsPlot(self.project, self._open,
+                      parent=getattr(self.viewer.window, "_qt_window", None)).exec()
 
     def _on_render(self) -> None:
         cells = collect_cells(self.project)

@@ -99,6 +99,23 @@ def tissue_mask(img: np.ndarray, threshold: float, dark_background: bool,
     return np.isin(lab, keep)
 
 
+def _right_hemisphere_left(al: dict) -> bool:
+    """Whether an alignment puts the atlas's right hemisphere on the image's left.
+
+    The atlas plane's first axis runs from the right hemisphere to the left; it points
+    to the image's right when the in-plane rotation and mirror don't reverse it."""
+    return np.cos(np.radians(al["rotation_deg"])) * (-1.0 if al["flip"] else 1.0) > 0
+
+
+def _mirror_atlas(al: dict) -> None:
+    """Swap the atlas's hemispheres without moving its outline in the image: mirror
+    the plane left-right (flip) and the tilt (yaw). Exact for a symmetric atlas."""
+    al["flip"] = not al["flip"]
+    al["yaw_deg"] = -al["yaw_deg"]
+    w = float(al["plane_size_um"][0])
+    al["landmarks"] = [[w - s, t, x, y] for s, t, x, y in al["landmarks"]]
+
+
 class Project:
     """A folder next to the slide holding thumbnails, crops, alignments and cells."""
 
@@ -128,7 +145,7 @@ class Project:
             "thumb_factor": THUMB_FACTOR,
             "threshold": None,
             "dark_background": True,
-            "section_spacing_um": 100.0,
+            "section_spacing_um": 80.0,
             "slices": [],
         }
         proj = cls(root, data)
@@ -167,13 +184,19 @@ class Project:
 
         Sections keep their id (matched by name) so alignments and cells survive.
         Returns the ids whose images still need to be imported."""
-        from .folder import find_sections, load_config
+        from .folder import _name_key, find_sections, load_config, load_hemispheres
 
         folder = Path(self.data["source"])
         config, _ = load_config(folder)
+        try:
+            hemispheres = load_hemispheres(folder, config)
+            self.hemisphere_error = None
+        except ValueError as e:  # keep the sections' current orientation
+            hemispheres, self.hemisphere_error = None, str(e)
         self.data["channels"] = config["channels"]
         self.data["align_channel"] = config["align_channel"]
         self.data["auto_crop"] = bool(config["auto_crop"])
+        self.data["order"] = config["order"]
         old = {s["name"]: s for s in self.slices}
         next_id = max(self._used_ids() | {0}) + 1
         slices = []
@@ -184,6 +207,13 @@ class Project:
             entry.update(found)
             if config["pixel_um"]:
                 entry["pixel_um"] = float(config["pixel_um"])
+            if hemispheres is not None:
+                side = hemispheres.get(_name_key(entry["name"]))
+                if side:
+                    entry["hemispheres"] = side
+                else:
+                    entry.pop("hemispheres", None)
+                entry["mirror"] = side == "L,R"
             slices.append(entry)
         self.data["slices"] = slices
         self.save()
@@ -195,11 +225,15 @@ class Project:
 
         ``auto_crop`` crops the image to the main piece of tissue and blanks anything
         else (bits of neighbouring sections). The crop box is stored as ``crop`` in
-        source-file pixels; existing alignment and cells are moved with it."""
+        source-file pixels; existing alignment and cells are moved with it. Sections
+        marked ``mirror`` (see ``apply_hemispheres``) are stored mirrored left-right."""
         from .folder import read_section
 
         s = self.get_slice(sid)
         img, pixel_um = read_section(Path(self.data["source"]) / s["file"])
+        if self.status(sid)["cropped"] and s.get("mirrored"):
+            self._mirror_slice_data(sid, s["size"][0])  # back to the file's orientation
+        s["mirrored"] = False
         if pixel_um and "pixel_um" not in s:
             s["pixel_um"] = pixel_um
         h, w = img.shape[:2]
@@ -213,7 +247,81 @@ class Project:
             self._shift_slice_data(sid, old[0] - crop[0], old[1] - crop[1], crop)
         s["crop"] = [int(v) for v in crop]
         s["auto_crop"] = bool(auto_crop)
+        mirror = bool(s.get("mirror"))
+        if mirror:
+            img = np.ascontiguousarray(img[:, ::-1])
         self._write_section(sid, img, blur_um=80.0, largest_only=True)
+        if mirror:
+            self._mirror_slice_data(sid, img.shape[1])
+        s["mirrored"] = mirror
+
+    def apply_hemispheres(self, atlas=None) -> list[int]:
+        """Give every section the atlas's orientation: right hemisphere on the image's
+        left. Returns the ids that changed.
+
+        Sections marked ``mirror`` (from the folder's hemispheres CSV) have their image,
+        preview and mask mirrored left-right, with alignment, landmarks and cells
+        mirrored along so the atlas outline stays on the same tissue. Then, where the
+        hemispheres are known, an atlas fitted with its hemispheres the wrong way round
+        is mirrored (flip toggled, yaw negated): its outline doesn't move, but its left
+        and right swap. Cells are re-mapped so their hemisphere follows."""
+        changed = []
+        for s in self.slices:
+            sid = s["id"]
+            if not self.status(sid)["cropped"]:
+                continue
+            moved = False
+            want = bool(s.get("mirror", False))
+            if bool(s.get("mirrored", False)) != want:
+                self._mirror_files(sid)
+                self._mirror_slice_data(sid, s["size"][0])
+                s["mirrored"] = want
+                moved = True
+            al = self.load_alignment(sid)
+            if s.get("hemispheres") and al is not None and not _right_hemisphere_left(al):
+                _mirror_atlas(al)
+                self.save_alignment(sid, al)
+                moved = True
+            if moved:
+                changed.append(sid)
+                cells = self.load_cells(sid)
+                if al is not None and cells is not None and len(cells):
+                    from .atlas import Atlas
+                    from .export import map_cells
+                    from .transform import Alignment
+
+                    atlas = atlas or Atlas(self.data["atlas"])
+                    al = self.load_alignment(sid)
+                    xy = cells[["x_px", "y_px"]].to_numpy(float)
+                    self.save_cells(sid, map_cells(atlas, Alignment.from_dict(al), xy,
+                                                   cells["cell_type"].tolist(), sid))
+        self.save()
+        return changed
+
+    def _mirror_files(self, sid: int) -> None:
+        d = self.slice_dir(sid)
+        img = np.ascontiguousarray(self.load_image(sid)[:, ::-1])
+        tifffile.imwrite(d / "image.tif", img, compression="zlib",
+                         photometric="rgb" if img.shape[2] == 3 else "minisblack")
+        tifffile.imwrite(d / "preview.tif",
+                         np.ascontiguousarray(self.load_preview(sid)[:, ::-1]))
+        mask = self.load_mask(sid)[:, ::-1]
+        cv2.imwrite(str(d / "mask.png"), mask.astype(np.uint8) * 255)
+
+    def _mirror_slice_data(self, sid: int, width: int) -> None:
+        """Mirror a section's alignment, landmarks and cells left-right with its image
+        (x -> width - 1 - x), keeping the atlas outline on the same tissue."""
+        al = self.load_alignment(sid)
+        if al is not None:
+            al["rotation_deg"] = -al["rotation_deg"]
+            al["flip"] = not al["flip"]
+            al["tx"] = width - 1 - al["tx"]
+            al["landmarks"] = [[s, t, width - 1 - x, y] for s, t, x, y in al["landmarks"]]
+            self.save_alignment(sid, al)
+        cells = self.load_cells(sid)
+        if cells is not None:
+            cells["x_px"] = width - 1 - cells["x_px"]
+            self.save_cells(sid, cells)
 
     def _crop_to_tissue(self, img: np.ndarray, pixel_um: float | None,
                         margin_um: float = 150.0) -> tuple[np.ndarray, list[int]]:
