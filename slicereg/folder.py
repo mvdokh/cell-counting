@@ -17,6 +17,7 @@ import tifffile
 CONFIG_NAME = "slicereg_folder.json"
 DEFAULT_CONFIG = {
     "pattern": r"c(?P<col>\d+)_r(?P<row>\d+).*_MIP\.lsm$",
+    "exclude": None,
     "order": "column",
     "channels": [{"name": "rfp", "color": "red"}, {"name": "nissl", "color": "blue"}],
     "align_channel": "nissl",
@@ -29,6 +30,8 @@ DEFAULT_CONFIG = {
 CONFIG_HELP = {
     "pattern": "regular expression matched against file names; named groups 'col' and "
                "'row' give the section's position on the slide",
+    "exclude": "optional regular expression: matching files are skipped, e.g. '_20x_' "
+               "to ignore re-imaged copies (null = skip nothing)",
     "order": "'column' = sections are numbered down each column (c1_r1, c1_r2, ...), "
              "'row' = along each row (c1_r1, c2_r1, ...); used to guess AP positions",
     "channels": "one entry per image channel, in file order; color is a napari colormap",
@@ -57,12 +60,16 @@ def load_config(folder: Path) -> tuple[dict, bool]:
 
 
 def find_sections(folder: Path, config: dict) -> list[dict]:
-    """Matching files as ``{"file", "name", "col", "row"}``, in section order."""
+    """Matching files as ``{"file", "name", "col", "row"}``, in section order.
+
+    Several files can share a slide position (e.g. a section imaged again at 20x);
+    they all get the same name, and ``Project.sync_folder`` keeps one of them."""
     rx = re.compile(config["pattern"], re.IGNORECASE)
+    skip = re.compile(config["exclude"], re.IGNORECASE) if config.get("exclude") else None
     found = []
     for p in sorted(Path(folder).iterdir()):
         m = rx.search(p.name)
-        if not p.is_file() or not m:
+        if not p.is_file() or not m or (skip and skip.search(p.name)):
             continue
         col, row = int(m.group("col")), int(m.group("row"))
         found.append({"file": p.name, "name": f"c{col}_r{row}", "col": col, "row": row})

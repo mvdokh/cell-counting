@@ -37,15 +37,69 @@ def contrast_limits(channel: np.ndarray) -> tuple[float, float]:
     return float(lo), float(max(hi, lo + 1))
 
 
+def full_range(dtype) -> tuple[float, float]:
+    """The values an image of this dtype can hold (0-1 for float images)."""
+    dtype = np.dtype(dtype)
+    if np.issubdtype(dtype, np.integer):
+        return float(max(0, np.iinfo(dtype).min)), float(np.iinfo(dtype).max)
+    return 0.0, 1.0
+
+
+def get_levels(project, n_channels: int, dtype, sid: int | None = None) -> list[dict]:
+    """Brightness levels ``{"min", "max", "gamma"}`` per channel, set by the user.
+
+    A section's own levels (if it has any) win over the project's shared levels;
+    without either, each channel shows the dtype's full range unchanged."""
+    lo, hi = full_range(dtype)
+    out = [{"min": lo, "max": hi, "gamma": 1.0} for _ in range(n_channels)]
+    saved = project.get_slice(sid).get("levels") if sid is not None else None
+    if saved is None:
+        saved = project.data.get("levels")
+    for level, s in zip(out, saved or []):
+        level.update({k: float(s[k]) for k in ("min", "max", "gamma") if k in s})
+    return out
+
+
+def store_levels(project, levels: list[dict], sid: int | None = None) -> None:
+    """Save levels as the project's shared levels, or as one section's own."""
+    clean = [{k: round(float(lv[k]), 4) for k in ("min", "max", "gamma")} for lv in levels]
+    if sid is None:
+        project.data["levels"] = clean
+    else:
+        project.get_slice(sid)["levels"] = clean
+    project.save()
+
+
+def layer_levels(layers) -> list[dict]:
+    return [{"min": float(layer.contrast_limits[0]), "max": float(layer.contrast_limits[1]),
+             "gamma": float(layer.gamma)} for layer in layers]
+
+
+def apply_levels(layers, levels: list[dict]) -> None:
+    for layer, lv in zip(layers, levels):
+        lo, hi = float(lv["min"]), float(lv["max"])
+        if hi <= lo:
+            hi = lo + (1.0 if np.issubdtype(layer.data.dtype, np.integer) else 1e-3)
+        r0, r1 = layer.contrast_limits_range
+        if lo < r0 or hi > r1:
+            layer.contrast_limits_range = (min(lo, r0), max(hi, r1))
+        layer.contrast_limits = (lo, hi)
+        layer.gamma = float(lv.get("gamma", 1.0))
+
+
 def add_channels(viewer, img: np.ndarray, name: str, channels: list[dict] | None = None,
-                 limits: tuple[float, float] | None = None, **kwargs):
+                 limits: tuple[float, float] | None = None, levels: list[dict] | None = None,
+                 **kwargs):
     """Add an (H, W, C) image as one additive layer per channel.
 
     ``channels`` optionally gives ``{"name", "color"}`` per channel (project config);
-    otherwise channels are named after default colormaps. ``limits`` fixes the
-    contrast limits of every channel instead of estimating them from the data."""
+    otherwise channels are named after default colormaps. ``levels`` (see
+    ``get_levels``) or ``limits`` fix the brightness of every channel instead of
+    estimating it from the data."""
     c = img.shape[2]
-    if limits is not None:
+    if levels is not None:
+        contrast = [(lv["min"], max(lv["max"], lv["min"] + 1e-3)) for lv in levels]
+    elif limits is not None:
         contrast = [tuple(limits)] * c
     else:
         contrast = [contrast_limits(img[..., i]) for i in range(c)]
@@ -56,11 +110,17 @@ def add_channels(viewer, img: np.ndarray, name: str, channels: list[dict] | None
         cmaps = [ch.get("color", cm) for ch, cm in zip(channels, cmaps)]
         labels = [ch.get("name", cm) for ch, cm in zip(channels, cmaps)]
     if c == 1:
-        return [viewer.add_image(img[..., 0], name=name, colormap=cmaps[0] if channels else "gray",
-                                 contrast_limits=contrast[0], **kwargs)]
-    return viewer.add_image(
-        img, channel_axis=2, name=[f"{name} ({lb})" for lb in labels], colormap=cmaps,
-        blending="additive", contrast_limits=contrast, **kwargs)
+        layers = [viewer.add_image(img[..., 0], name=name,
+                                   colormap=cmaps[0] if channels else "gray",
+                                   contrast_limits=contrast[0], **kwargs)]
+    else:
+        layers = viewer.add_image(
+            img, channel_axis=2, name=[f"{name} ({lb})" for lb in labels], colormap=cmaps,
+            blending="additive", contrast_limits=contrast, **kwargs)
+    if levels is not None:
+        for layer, lv in zip(layers, levels):
+            layer.gamma = float(lv.get("gamma", 1.0))
+    return layers
 
 
 def channel_index(project, name: str | None) -> int | None:

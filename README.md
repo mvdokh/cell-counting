@@ -72,6 +72,7 @@ their names mean:
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `pattern` | `c(?P<col>\d+)_r(?P<row>\d+).*_MIP\.lsm$` | Regular expression for the files to use; the `col` and `row` groups give the section's position on the slide |
+| `exclude` | `null` | Optional regular expression for files to skip, e.g. `_20x_` to ignore re-imaged copies. If several files share a slide position, a section keeps the file it already uses and the others are listed when the folder opens |
 | `order` | `column` | Section order for Prev/Next and AP guesses: `column` = c1_r1, c1_r2, ...; `row` = c1_r1, c2_r1, ... |
 | `channels` | rfp (red), nissl (blue) | Name and napari colour of each channel, in file order |
 | `align_channel` | `nissl` | Channel DeepSlice sees |
@@ -81,9 +82,9 @@ their names mean:
 | `atlas`, `section_spacing_um` | `allen_mouse_25um`, 80 | Used when the project is created |
 
 The slide view then shows every section at true size in its column/row, cropped to
-its tissue and with each section's brightness stretched separately so sections
-imaged with different settings look alike (the slice view itself shows the raw
-data). Click a section to select it (its box turns cyan) and double-click it, or
+its tissue. Every section is drawn with the same brightness levels, the project's
+shared levels (see the *Brightness* panel below), so differences in brightness
+between sections are real. Click a section to select it (its box turns cyan) and double-click it, or
 use *Open selected section*, to align and count it exactly as above. Z-stacks are max-projected, and mosaics
 that were saved as separate tiles are stitched from the tile positions in the file.
 Click *Rescan folder* after editing the config or adding images; existing sections
@@ -134,6 +135,24 @@ Options for `open`:
    or the MRI average for MRI-based atlases) with the same outlines, panned and
    zoomed together with the section; hovering either panel shows a crosshair at the
    matching spot in the other. These settings are saved per project.
+
+   The **Brightness** panel below sets how each channel is displayed. Nothing is
+   adjusted automatically: a new project shows every channel's raw values (0-255
+   for 8-bit images). Each channel has these controls:
+   - a show/hide box;
+   - a histogram of the section's tissue pixels, with the current mapping drawn
+     over it;
+   - a *Range* slider: values at or below the left handle are black, and values at
+     or above the right handle are full brightness;
+   - a *Gamma* slider: below 1 brightens dim signal, above 1 darkens it.
+
+   *Auto (this section)* sets each channel's range once from this section's tissue,
+   clipping the given percentage of the darkest and brightest pixels. *Full range*
+   goes back to the raw values. The levels are saved with the project and shared by
+   every section and by the slide overview. napari's own layer controls (contrast
+   limits, gamma) change the same levels. Tick *Separate levels for this section*
+   to give one section its own levels, for example one imaged with different
+   settings.
 5. **1. Align to atlas** tab: set the AP position, tilt, rotation, scale and centre
    until the atlas outline matches the tissue. *Predict alignment with DeepSlice*
    (Allen mouse atlases only, see [Optional: DeepSlice](#optional-deepslice)) fills

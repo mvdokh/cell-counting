@@ -21,8 +21,9 @@ from ..transform import Alignment, SliceTransform, initial_alignment
 from .align_widget import AlignWidget
 from .cells_widget import CellsWidget
 from .display_widget import DisplayWidget
+from .brightness_widget import BrightnessWidget
 from .layers import (CELL_COLORS, DISPLAY_DEFAULTS, add_channels, channel_index,
-                     contrast_limits, outline_colormap)
+                     contrast_limits, get_levels, outline_colormap)
 
 CELL_PREFIX = "cells: "
 PICK_RADIUS_SCREEN_PX = 12
@@ -113,7 +114,9 @@ class SliceView:
         d = self._display
         off = (self.ds - 1) / 2
         overlay_kw = dict(scale=(self.ds, self.ds), translate=(off, off))
-        add_channels(v, self.image, "section", channels=self.project.data.get("channels"))
+        self.image_layers = add_channels(
+            v, self.image, "section", channels=self.project.data.get("channels"),
+            levels=get_levels(self.project, self.image.shape[2], self.image.dtype, self.sid))
         tmpl = self.atlas.template
         tmpl_clim = contrast_limits(tmpl[tmpl.shape[0] // 2])
         self.template_layer = v.add_image(
@@ -162,6 +165,8 @@ class SliceView:
 
     def deactivate(self) -> None:
         self._active = False
+        if getattr(self, "brightness_widget", None) is not None:
+            self.brightness_widget.disconnect_layers()
         self._timer.stop()
         self._smooth_timer.stop()
         if self._deepslice_running:
@@ -200,6 +205,8 @@ class SliceView:
 
         self.display_widget = DisplayWidget(self)
         lay.addWidget(self.display_widget)
+        self.brightness_widget = BrightnessWidget(self)
+        lay.addWidget(self.brightness_widget)
 
         self.tabs = QTabWidget()
         self.align_widget = AlignWidget(self)

@@ -9,7 +9,8 @@ from qtpy.QtWidgets import (QApplication, QLabel, QListWidget, QListWidgetItem, 
                             QProgressDialog, QPushButton, QVBoxLayout, QWidget)
 
 from ..folder import CONFIG_NAME, grid_layout
-from .layers import add_channels
+from .brightness_widget import save_levels_on_change
+from .layers import add_channels, get_levels
 from .slide_view import SlideView, _rect
 
 GAP_UM = 600.0
@@ -17,17 +18,11 @@ OVERVIEW_PX = 500  # overview width of the largest section, in screen-independen
 
 
 def _overview_tile(preview: np.ndarray, mask: np.ndarray, pad: float = 0.03) -> np.ndarray:
-    """The section's tissue only, cropped to it, each channel stretched to 0-255.
-
-    Stretching per section evens out sections imaged with different laser/gain
-    settings, so they look alike side by side."""
-    img = preview.astype(np.float32)
+    """The section's tissue only, cropped to it, with its raw values, so that one set
+    of brightness levels treats every section the same."""
     if mask.shape != preview.shape[:2] or not mask.any():
         mask = np.ones(preview.shape[:2], bool)
-    out = np.zeros(img.shape, np.uint8)
-    for c in range(img.shape[2]):
-        lo, hi = np.percentile(img[..., c][mask], [0.5, 99.7])
-        out[..., c] = np.clip((img[..., c] - lo) / max(hi - lo, 1e-6) * 255, 0, 255)
+    out = preview.copy()
     out[~mask] = 0
     ys, xs = np.nonzero(mask)
     p = int(pad * max(np.ptp(xs), np.ptp(ys)))
@@ -57,6 +52,14 @@ class FolderView(SlideView):
         to_import = self.project.sync_folder()
         if to_import:
             self._import(to_import)
+        skipped = getattr(self.project, "skipped_files", None)
+        if skipped:
+            QMessageBox.information(
+                None, "Files not used",
+                "These files are at a slide position that already has an image, so they "
+                f"were not used:\n{chr(10).join(skipped)}\n\nTo use one of them instead, "
+                f"set 'exclude' in {CONFIG_NAME} to a pattern matching the other file and "
+                "click 'Rescan folder' (that section's alignment and cells would need redoing).")
         error = getattr(self.project, "hemisphere_error", None)
         if error:
             QMessageBox.warning(None, "Hemispheres file not used",
@@ -124,8 +127,11 @@ class FolderView(SlideView):
             small = cv2.resize(previews[sid], (cw, rh), interpolation=cv2.INTER_AREA)
             small = small.reshape(rh, cw, -1)
             canvas[r0:r0 + rh, c0:c0 + cw, :small.shape[2]] = small
-        add_channels(self.viewer, canvas, "slide", channels=self.project.data.get("channels"),
-                     limits=(0, 255), scale=(um_px, um_px), translate=(um_px / 2, um_px / 2))
+        layers = add_channels(self.viewer, canvas, "slide",
+                              channels=self.project.data.get("channels"),
+                              levels=get_levels(self.project, n_ch, dtype),
+                              scale=(um_px, um_px), translate=(um_px / 2, um_px / 2))
+        self._levels_timer = save_levels_on_change(self.project, layers)
         sids = list(boxes)
         self._edge_um = 2.5 * um_px
         self.shapes = self.viewer.add_shapes(
@@ -183,6 +189,8 @@ class FolderView(SlideView):
             "Click a section to select it; double-click it (or a list entry) to align it "
             "and count cells.\n"
             "Labels: name, 'A' = aligned, (n) = cells counted.\n"
+            "Every section is shown with the same brightness levels (set them in a "
+            "section's Brightness panel, or with napari's layer controls here).\n"
             f"File names, channels and section order are set in {CONFIG_NAME} in that "
             "folder; click 'Rescan folder' after editing it or adding images.")
         help_text.setWordWrap(True)

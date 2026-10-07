@@ -183,7 +183,9 @@ class Project:
         """Pick up the folder's config and any new section files.
 
         Sections keep their id (matched by name) so alignments and cells survive.
-        Returns the ids whose images still need to be imported."""
+        When several files share a slide position, the section keeps the file it
+        already uses (new sections take the first); the others are listed in
+        ``skipped_files``. Returns the ids whose images still need to be imported."""
         from .folder import _name_key, find_sections, load_config, load_hemispheres
 
         folder = Path(self.data["source"])
@@ -199,11 +201,21 @@ class Project:
         self.data["order"] = config["order"]
         old = {s["name"]: s for s in self.slices}
         next_id = max(self._used_ids() | {0}) + 1
-        slices = []
+        candidates: dict[str, list[dict]] = {}
         for found in find_sections(folder, config):
+            candidates.setdefault(found["name"], []).append(found)
+        self.skipped_files = []  # other files at an already-used slide position
+        slices = []
+        for name, files in candidates.items():
+            current = old.get(name, {}).get("file")
+            found = next((f for f in files if f["file"] == current), files[0])
+            self.skipped_files += [f["file"] for f in files if f is not found]
             entry = old.get(found["name"])
             if entry is None:
                 entry, next_id = {"id": next_id}, next_id + 1
+            elif entry.get("file") != found["file"]:  # another image of this section
+                for key in ("pixel_um", "crop"):
+                    entry.pop(key, None)
             entry.update(found)
             if config["pixel_um"]:
                 entry["pixel_um"] = float(config["pixel_um"])
@@ -218,7 +230,8 @@ class Project:
         self.data["slices"] = slices
         self.save()
         return [s["id"] for s in slices if not self.status(s["id"])["cropped"]
-                or s.get("auto_crop", False) != self.data["auto_crop"]]
+                or s.get("auto_crop", False) != self.data["auto_crop"]
+                or s.get("imported_file", s["file"]) != s["file"]]
 
     def import_section(self, sid: int, auto_crop: bool | None = None) -> None:
         """Read one section file of a folder project into the slice folder.
@@ -254,6 +267,7 @@ class Project:
         if mirror:
             self._mirror_slice_data(sid, img.shape[1])
         s["mirrored"] = mirror
+        s["imported_file"] = s["file"]
 
     def apply_hemispheres(self, atlas=None) -> list[int]:
         """Give every section the atlas's orientation: right hemisphere on the image's

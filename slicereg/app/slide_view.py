@@ -13,7 +13,8 @@ from qtpy.QtWidgets import (QApplication, QLabel, QListWidget, QListWidgetItem, 
 from ..atlas import atlas_structures
 from ..detect import detect_sections
 from ..export import collect_cells, export_project
-from .layers import add_channels
+from .brightness_widget import save_levels_on_change
+from .layers import add_channels, get_levels
 from .render_dialog import RenderDialog
 
 
@@ -45,7 +46,10 @@ class SlideView:
         QApplication.processEvents()
         thumb = self.project.thumbnail()
         f = self.project.data["thumb_factor"]
-        add_channels(self.viewer, thumb, "slide", scale=(f, f), translate=((f - 1) / 2,) * 2)
+        layers = add_channels(self.viewer, thumb, "slide",
+                              levels=get_levels(self.project, thumb.shape[2], thumb.dtype),
+                              scale=(f, f), translate=((f - 1) / 2,) * 2)
+        self._levels_timer = save_levels_on_change(self.project, layers)
 
         if self.project.slices:
             entries = [(s["id"], s["bbox"]) for s in self.project.slices]

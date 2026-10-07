@@ -117,6 +117,32 @@ def test_turning_auto_crop_off_reimports_and_moves_cells(tmp_path):
     assert project.sync_folder() == []
 
 
+def test_reimaged_section_keeps_its_file_and_exclude_skips(tmp_path):
+    folder = tmp_path / "scans"
+    folder.mkdir()
+    config = {"pattern": r"c(?P<col>\d+)_r(?P<row>\d+).*_MIP\.tif$", "auto_crop": False}
+    (folder / CONFIG_NAME).write_text(json.dumps(config))
+    img = np.zeros((2, 60, 80), np.uint8)
+    img[1, 10:50, 10:70] = 120
+    for name in ("c1_r1_MIP.tif", "c1_r2_MIP.tif"):
+        tifffile.imwrite(folder / name, img, metadata={"axes": "CYX"})
+    project = Project.open_or_create(folder)
+    for sid in project.sync_folder():
+        project.import_section(sid)
+    tifffile.imwrite(folder / "c1_r2_20x_MIP.tif", img[:, :, :30], metadata={"axes": "CYX"})
+    assert project.sync_folder() == []
+    assert [(s["id"], s["file"]) for s in project.slices] == [(1, "c1_r1_MIP.tif"),
+                                                             (2, "c1_r2_MIP.tif")]
+    assert project.skipped_files == ["c1_r2_20x_MIP.tif"]
+
+    (folder / CONFIG_NAME).write_text(json.dumps({**config, "exclude": "c1_r2_MIP"}))
+    assert project.sync_folder() == [2]                      # new image: import again
+    assert [s["file"] for s in project.slices] == ["c1_r1_MIP.tif", "c1_r2_20x_MIP.tif"]
+    assert project.skipped_files == []
+    project.import_section(2)
+    assert project.load_image(2).shape[1] == 30 and project.sync_folder() == []
+
+
 def test_folder_without_matching_files_explains(tmp_path):
     with pytest.raises(FileNotFoundError, match="pattern"):
         Project.open_or_create(tmp_path)

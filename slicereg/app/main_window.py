@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import napari
-from qtpy.QtCore import QEvent, QObject, QTimer
-from qtpy.QtWidgets import QApplication
+from qtpy.QtCore import QEvent, QObject, Qt, QTimer
+from qtpy.QtWidgets import QApplication, QFrame, QScrollArea
 
 from ..atlas import Atlas
 from ..io import Project
@@ -48,7 +48,15 @@ class App:
         return self._atlas
 
     def add_dock(self, widget, name: str) -> None:
-        dock = self.viewer.window.add_dock_widget(widget, name=name, area="right")
+        """Dock ``widget`` on the right, scrollable so it fits any screen height."""
+        scroll = QScrollArea()
+        scroll.setWidget(widget)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setMinimumWidth(widget.minimumSizeHint().width()
+                               + scroll.verticalScrollBar().sizeHint().width())
+        dock = self.viewer.window.add_dock_widget(scroll, name=name, area="right")
         self._docks.append(dock)
 
     def _set_view(self, view) -> None:
