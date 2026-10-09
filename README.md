@@ -222,6 +222,8 @@ project folder:
   aren't ranked but still count towards the percentages. The 3D view's top regions use
   the same ranking.
 - `top_regions.png` is a bar plot of the cell count per region, in the same order.
+- `top_regions_by_hemisphere.png` shows the total cells in each hemisphere, and each
+  region's left and right counts side by side, in the same order.
 
 `render` options:
 
@@ -265,6 +267,7 @@ slide_project/
   region_counts.csv     # after export
   top_regions.csv       # after export
   top_regions.png       # after export
+  top_regions_by_hemisphere.png  # after export
 ```
 
 ## Tests

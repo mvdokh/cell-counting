@@ -90,6 +90,43 @@ def save_region_bar_plot(top: pd.DataFrame, path) -> None:
     fig.savefig(path, dpi=300)
 
 
+HEMISPHERE_COLORS = {"left": "#4c72b0", "right": "#dd8452"}
+
+
+def save_hemisphere_bar_plot(cells: pd.DataFrame, top: pd.DataFrame, path) -> None:
+    """Cells per hemisphere: totals, then each region split by side in ``top_regions``
+    order."""
+    from matplotlib.figure import Figure
+
+    sides = list(HEMISPHERE_COLORS)
+    totals = cells["hemisphere"].value_counts().reindex(sides, fill_value=0)
+    fig = Figure(figsize=(max(5.0, 0.6 * len(top) + 3.0), 4.0), layout="constrained")
+    ax_total, ax_region = fig.subplots(
+        1, 2, width_ratios=[1.6, max(2.0, 0.6 * len(top))])
+
+    ax_total.bar(sides, totals.values, color=[HEMISPHERE_COLORS[s] for s in sides])
+    for x, n in enumerate(totals.values):
+        ax_total.annotate(str(n), (x, n), ha="center", va="bottom",
+                          xytext=(0, 2), textcoords="offset points", fontsize=8)
+    ax_total.set_ylabel("Cells")
+    ax_total.set_xlabel("Hemisphere")
+    ax_total.set_title("All cells", fontsize=10)
+
+    x = np.arange(len(top))
+    width = 0.4
+    for i, side in enumerate(sides):
+        ax_region.bar(x + (i - 0.5) * width, top[side], width,
+                      color=HEMISPHERE_COLORS[side], label=side)
+    ax_region.set_xticks(x, top["region_acronym"].astype(str), rotation=45, ha="right")
+    ax_region.set_xlabel("Region")
+    ax_region.set_title("Per region", fontsize=10)
+    ax_region.legend(frameon=False, title="Hemisphere")
+    ax_region.margins(x=0.01)
+    for ax in (ax_total, ax_region):
+        ax.spines[["top", "right"]].set_visible(False)
+    fig.savefig(path, dpi=300)
+
+
 def export_project(project) -> str:
     cells = collect_cells(project)
     cells.to_csv(project.root / "cells_all.csv", index=False)
@@ -104,7 +141,8 @@ def export_project(project) -> str:
     written = ["cells_all.csv", "region_counts.csv", "top_regions.csv"]
     if len(top):
         save_region_bar_plot(top, project.root / "top_regions.png")
-        written.append("top_regions.png")
+        save_hemisphere_bar_plot(cells, top, project.root / "top_regions_by_hemisphere.png")
+        written += ["top_regions.png", "top_regions_by_hemisphere.png"]
     counted = sum(project.status(s["id"])["counted"] for s in project.slices)
     return (f"{len(cells)} cells from {counted}/{len(project.slices)} slices.\n"
             f"Wrote {', '.join(written)} in\n{project.root}")

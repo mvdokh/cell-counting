@@ -62,6 +62,7 @@ def test_detect_crop_align_count_move_export(project, atlas):
     assert list(top["region_acronym"]) == [all_cells.loc[0, "region_acronym"]]
     assert top.loc[0, "cells"] == 1 and top.loc[0, "percent_of_cells"] == 100.0
     assert (project.root / "top_regions.png").stat().st_size > 0
+    assert (project.root / "top_regions_by_hemisphere.png").stat().st_size > 0
 
 
 def test_top_regions_ranks_by_count():
