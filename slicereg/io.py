@@ -77,12 +77,32 @@ def imwrite_png(path: Path, rgb: np.ndarray) -> None:
     cv2.imwrite(str(path), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
 
 
+def auto_threshold(img: np.ndarray, dark_background: bool = True) -> float:
+    """Tissue/background threshold for a section image (max over channels).
+
+    On a dark background, Otsu runs on log intensity: with plain Otsu a very bright
+    structure (e.g. a Nissl-bright paraflocculus) can pull the threshold above the rest
+    of the tissue."""
+    g = np.asarray(img).max(axis=2).astype(np.float32)
+    lo, hi = float(g.min()), float(g.max())
+    if hi <= lo:
+        return lo
+    v = np.log1p(g - lo) if dark_background else g - lo
+    top = float(v.max())
+    t8, _ = cv2.threshold((v * (255.0 / top)).astype(np.uint8), 0, 255,
+                          cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    t = t8 / 255.0 * top
+    return lo + (float(np.expm1(t)) if dark_background else t)
+
+
 def tissue_mask(img: np.ndarray, threshold: float, dark_background: bool,
                 blur_px: int, largest_only: bool = False) -> np.ndarray:
     """Binary mask of the main piece(s) of tissue in a single section image.
 
-    ``largest_only`` drops everything but the biggest piece, e.g. bits of neighbouring
-    sections at the edge of an image that is known to hold one section."""
+    ``largest_only`` is for images known to hold one section: it keeps the biggest
+    piece plus detached pieces of it (at least 5% of its area, not touching the image
+    edge, e.g. a paraflocculus), and drops bits of neighbouring sections, which the
+    image edge cuts off."""
     g = np.asarray(img).max(axis=2).astype(np.float32)
     k = max(3, int(blur_px) | 1)
     g = cv2.GaussianBlur(g, (k, k), 0)
@@ -94,7 +114,10 @@ def tissue_mask(img: np.ndarray, threshold: float, dark_background: bool,
         return m
     areas = ndi.sum(m, lab, index=np.arange(1, n + 1))
     if largest_only:
-        return lab == int(np.argmax(areas)) + 1
+        edge = np.unique(np.concatenate([lab[0], lab[-1], lab[:, 0], lab[:, -1]]))
+        inner = ~np.isin(np.arange(1, n + 1), edge)
+        keep = np.flatnonzero(inner & (areas >= 0.05 * areas.max())) + 1
+        return np.isin(lab, np.append(keep, int(np.argmax(areas)) + 1))
     keep = np.flatnonzero(areas >= 0.1 * areas.max()) + 1
     return np.isin(lab, keep)
 
@@ -186,7 +209,8 @@ class Project:
         When several files share a slide position, the section keeps the file it
         already uses (new sections take the first); the others are listed in
         ``skipped_files``. Returns the ids whose images still need to be imported."""
-        from .folder import _name_key, find_sections, load_config, load_hemispheres
+        from .folder import (_name_key, find_sections, load_config, load_hemispheres,
+                             split_channels)
 
         folder = Path(self.data["source"])
         config, _ = load_config(folder)
@@ -195,7 +219,7 @@ class Project:
             self.hemisphere_error = None
         except ValueError as e:  # keep the sections' current orientation
             hemispheres, self.hemisphere_error = None, str(e)
-        self.data["channels"] = config["channels"]
+        self.data["channels"], self.data["drop_channels"] = split_channels(config)
         self.data["align_channel"] = config["align_channel"]
         self.data["auto_crop"] = bool(config["auto_crop"])
         self.data["order"] = config["order"]
@@ -244,6 +268,9 @@ class Project:
 
         s = self.get_slice(sid)
         img, pixel_um = read_section(Path(self.data["source"]) / s["file"])
+        drop = [i for i in self.data.get("drop_channels") or [] if i < img.shape[2]]
+        if drop:
+            img = np.ascontiguousarray(np.delete(img, drop, axis=2))
         if self.status(sid)["cropped"] and s.get("mirrored"):
             self._mirror_slice_data(sid, s["size"][0])  # back to the file's orientation
         s["mirrored"] = False
@@ -346,8 +373,7 @@ class Project:
         small = downsample(img, ds)
         thr = self.data["threshold"]
         if thr is None:
-            thr = float(cv2.threshold(small.max(axis=2).astype(np.uint8), 0, 255,
-                                      cv2.THRESH_BINARY + cv2.THRESH_OTSU)[0])
+            thr = auto_threshold(small, self.data["dark_background"])
         px_um = pixel_um or 1.0
         mask = tissue_mask(small, thr, self.data["dark_background"],
                            int(80.0 / px_um / ds), largest_only=True)
@@ -482,8 +508,7 @@ class Project:
         tifffile.imwrite(d / "preview.tif", preview)
         thr = self.data["threshold"]
         if thr is None:
-            thr = float(cv2.threshold(preview.max(axis=2).astype(np.uint8), 0, 255,
-                                      cv2.THRESH_BINARY + cv2.THRESH_OTSU)[0])
+            thr = auto_threshold(preview, self.data["dark_background"])
         if blur_um is not None and s.get("pixel_um"):
             blur_px_full = blur_um / s["pixel_um"]
         blur = (blur_px_full or 80.0) / ds

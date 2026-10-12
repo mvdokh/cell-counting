@@ -34,7 +34,9 @@ CONFIG_HELP = {
                "to ignore re-imaged copies (null = skip nothing)",
     "order": "'column' = sections are numbered down each column (c1_r1, c1_r2, ...), "
              "'row' = along each row (c1_r1, c2_r1, ...); used to guess AP positions",
-    "channels": "one entry per image channel, in file order; color is a napari colormap",
+    "channels": "one entry per image channel, in file order; color is a napari colormap. "
+                "Add \"drop\": true to leave a channel out (e.g. the empty red channel of "
+                "an RGB JPG)",
     "align_channel": "channel shown to DeepSlice (null = all channels)",
     "auto_crop": "crop each image to its main section and blank bits of neighbouring "
                  "sections (true/false)",
@@ -76,6 +78,13 @@ def find_sections(folder: Path, config: dict) -> list[dict]:
     key = (lambda s: (s["row"], s["col"])) if config["order"] == "row" else \
         (lambda s: (s["col"], s["row"]))
     return sorted(found, key=key)
+
+
+def split_channels(config: dict) -> tuple[list[dict], list[int]]:
+    """(channels to keep, file indices of channels marked ``drop``)."""
+    channels = config["channels"]
+    return ([c for c in channels if not c.get("drop")],
+            [i for i, c in enumerate(channels) if c.get("drop")])
 
 
 def _name_key(name: str) -> str:
@@ -135,12 +144,24 @@ def _stitch(tiles: np.ndarray, positions_px: np.ndarray) -> np.ndarray:
     return out
 
 
+IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".bmp")
+
+
 def read_section(path: Path) -> tuple[np.ndarray, float | None]:
     """Return ``(image (H, W, C), pixel size in um or None)``.
 
     Z-stacks are max-projected and unstitched mosaics (axis ``M``) are stitched from the
     LSM tile positions, so a missing or failed MIP export still gives a usable image.
+    JPG/PNG/BMP files carry no reliable pixel size, so theirs is None.
     """
+    path = Path(path)
+    if path.suffix.lower() in IMAGE_SUFFIXES:
+        from PIL import Image
+
+        Image.MAX_IMAGE_PIXELS = None  # stitched scans are legitimately huge
+        with Image.open(path) as im:
+            arr = np.asarray(im if im.mode in ("L", "RGB") else im.convert("RGB"))
+        return np.ascontiguousarray(arr if arr.ndim == 3 else arr[..., None]), None
     with tifffile.TiffFile(str(path)) as tif:
         series = tif.series[0]
         arr = series.asarray()

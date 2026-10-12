@@ -74,7 +74,7 @@ their names mean:
 | `pattern` | `c(?P<col>\d+)_r(?P<row>\d+).*_MIP\.lsm$` | Regular expression for the files to use; the `col` and `row` groups give the section's position on the slide |
 | `exclude` | `null` | Optional regular expression for files to skip, e.g. `_20x_` to ignore re-imaged copies. If several files share a slide position, a section keeps the file it already uses and the others are listed when the folder opens |
 | `order` | `column` | Section order for Prev/Next and AP guesses: `column` = c1_r1, c1_r2, ...; `row` = c1_r1, c2_r1, ... |
-| `channels` | rfp (red), nissl (blue) | Name and napari colour of each channel, in file order |
+| `channels` | rfp (red), nissl (blue) | Name and napari colour of each channel, in file order. Add `"drop": true` to leave one out, e.g. the empty red channel of an RGB JPG |
 | `align_channel` | `nissl` | Channel DeepSlice sees |
 | `auto_crop` | `true` | Crop each image to its main section and blank bits of neighbouring sections |
 | `pixel_um` | `null` | Pixel size in microns; `null` reads it from the file |
@@ -89,6 +89,20 @@ use *Open selected section*, to align and count it exactly as above. Z-stacks ar
 that were saved as separate tiles are stitched from the tile positions in the file.
 Click *Rescan folder* after editing the config or adding images; existing sections
 keep their alignments and cells.
+
+Folders of JPG, PNG or BMP exports work too. They have no pixel size in them, so set
+`pixel_um` if you know it (otherwise sizes are in pixels). For example, for RGB JPGs
+named `001_1-2_Stitch_(c1+c2).jpg` (slide 1, section 2), with an empty red channel:
+
+```json
+{
+  "pattern": "(?P<col>\\d+)-(?P<row>\\d+)_Stitch.*\\.jpe?g$",
+  "channels": [{"name": "empty", "color": "red", "drop": true},
+               {"name": "green", "color": "green"},
+               {"name": "nissl", "color": "blue"}],
+  "align_channel": "nissl"
+}
+```
 
 **Hemispheres.** Sections can land on the slide either way up, so some images show the
 right hemisphere on the left and others the left. List them in `hemispheres.csv` in

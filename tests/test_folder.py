@@ -143,6 +143,47 @@ def test_reimaged_section_keeps_its_file_and_exclude_skips(tmp_path):
     assert project.load_image(2).shape[1] == 30 and project.sync_folder() == []
 
 
+def test_jpg_folder_drops_marked_channels(tmp_path):
+    from PIL import Image
+
+    folder = tmp_path / "jpgs"
+    folder.mkdir()
+    config = {"pattern": r"(?P<col>\d+)-(?P<row>\d+)_Stitch.*\.jpe?g$", "auto_crop": False,
+              "channels": [{"name": "empty", "color": "red", "drop": True},
+                           {"name": "signal", "color": "green"},
+                           {"name": "nissl", "color": "blue"}],
+              "align_channel": "nissl"}
+    (folder / CONFIG_NAME).write_text(json.dumps(config))
+    rgb = np.zeros((60, 80, 3), np.uint8)
+    rgb[10:50, 10:70, 1] = 100
+    rgb[10:50, 10:70, 2] = 200
+    for name in ("002_1-3_Stitch_(c1+c2).jpg", "001_1-2_Stitch_(c1+c2).jpg"):
+        Image.fromarray(rgb).save(folder / name, quality=100)
+    img, pixel_um = read_section(folder / "001_1-2_Stitch_(c1+c2).jpg")
+    assert img.shape == (60, 80, 3) and pixel_um is None
+    project = Project.open_or_create(folder)
+    assert [s["name"] for s in project.slices] == ["c1_r2", "c1_r3"]
+    assert [c["name"] for c in project.data["channels"]] == ["signal", "nissl"]
+    project.import_section(1)
+    img = project.load_image(1)
+    assert img.shape == (60, 80, 2)
+    assert abs(int(img[30, 40, 0]) - 100) < 5 and abs(int(img[30, 40, 1]) - 200) < 5
+
+
+def test_auto_crop_keeps_dim_tissue_and_detached_pieces():
+    from slicereg.io import auto_threshold, tissue_mask
+
+    img = np.random.default_rng(0).integers(0, 4, (200, 300, 1)).astype(np.uint8)
+    img[60:160, 80:220] = 40              # dim brainstem
+    img[80:120, 30:70] = 220              # bright detached paraflocculi
+    img[80:120, 230:270] = 220
+    img[0:15, 100:200] = 220              # neighbouring section cut by the image edge
+    thr = auto_threshold(img)
+    assert 2 < thr < 40
+    mask = tissue_mask(img, thr, True, 3, largest_only=True)
+    assert mask[110, 150] and mask[100, 50] and mask[100, 250] and not mask[5, 150]
+
+
 def test_folder_without_matching_files_explains(tmp_path):
     with pytest.raises(FileNotFoundError, match="pattern"):
         Project.open_or_create(tmp_path)
