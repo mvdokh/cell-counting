@@ -4,6 +4,7 @@
     python -m slicereg open  C:\\path\\to\\image_folder  # one image file per section
     python -m slicereg export C:\\path\\to\\slide_project
     python -m slicereg render C:\\path\\to\\slide_project
+    python -m slicereg split-mosaic mosaic.lsm --rows 3 --cols 2 --first-col 2
     python -m slicereg deepslice-setup                  # one-off, for DeepSlice alignment
 """
 
@@ -62,6 +63,21 @@ def main(argv=None) -> None:
                           help="hide the title at the top of the window")
     p_render.add_argument("--screenshot", help="save a PNG instead of opening a window")
 
+    p_split = sub.add_parser("split-mosaic",
+                             help="crop a regular-grid multi-section LSM into one "
+                                  "LSM per section (source file is kept)")
+    p_split.add_argument("path", help="mosaic .lsm (stack or MIP)")
+    p_split.add_argument("--rows", type=int, required=True, help="number of section rows")
+    p_split.add_argument("--cols", type=int, required=True, help="number of section columns")
+    p_split.add_argument("--first-col", type=int, default=1,
+                         help="column index of the top-left tile (default 1)")
+    p_split.add_argument("--first-row", type=int, default=1,
+                         help="row index of the top-left tile (default 1)")
+    p_split.add_argument("--names", nargs="+",
+                         help="output stems in row-major order, e.g. c2r1 c3r1 c2r2 ... "
+                              "(default: c{col}r{row}[_mip])")
+    p_split.add_argument("--out-dir", help="folder for the crops (default: next to the source)")
+
     sub.add_parser("deepslice-setup",
                    help="install DeepSlice (and TensorFlow) in its own environment, "
                         "for the 'Predict alignment with DeepSlice' button")
@@ -72,6 +88,15 @@ def main(argv=None) -> None:
 
         setup()
         print(f"DeepSlice is ready ({ENV_DIR}).")
+        return
+    if args.cmd == "split-mosaic":
+        from .split_mosaic import split_mosaic
+
+        written = split_mosaic(args.path, args.rows, args.cols,
+                               first_col=args.first_col, first_row=args.first_row,
+                               names=args.names, out_dir=args.out_dir)
+        print(f"Wrote {len(written)} files next to {args.path}"
+              if args.out_dir is None else f"Wrote {len(written)} files in {args.out_dir}")
         return
     from .io import Project
 

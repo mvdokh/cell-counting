@@ -58,6 +58,18 @@ reopens the project where you left off.
 
 ### A folder of section images
 
+If several sections were scanned together in one LSM (a regular grid on the slide),
+split them first. The source file is kept; each tile is written as its own LSM with
+the Zeiss pixel-size tag intact:
+
+```powershell
+slicereg split-mosaic "E:\Histology\Zeiss\PCRt_Rabies_1\7\c2r1-c3r3_mip.lsm" --rows 3 --cols 2 --first-col 2
+```
+
+That writes `c2r1_mip.lsm` … `c3r3_mip.lsm` next to the mosaic (top-left is
+`c{first-col}r{first-row}`, left-to-right then top-to-bottom). Use the same command
+on the Z-stack mosaic to get `c2r1.lsm` … `c3r3.lsm`.
+
 If each section was imaged separately (e.g. Zeiss `.lsm` tile scans), open the
 folder instead:
 
