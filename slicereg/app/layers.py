@@ -45,29 +45,78 @@ def full_range(dtype) -> tuple[float, float]:
     return 0.0, 1.0
 
 
-def get_levels(project, n_channels: int, dtype, sid: int | None = None) -> list[dict]:
+def get_levels(project, n_channels: int, dtype, sid: int | None = None,
+               key: str = "levels") -> list[dict]:
     """Brightness levels ``{"min", "max", "gamma"}`` per channel, set by the user.
 
-    A section's own levels (if it has any) win over the project's shared levels;
-    without either, each channel shows the dtype's full range unchanged."""
+    A section's own levels (if it has any and ``key`` is ``"levels"``) win over the
+    project's shared levels for that key; without either, each channel shows the
+    dtype's full range unchanged. Use ``key="overview_levels"`` for the slide
+    overview, which is independent of the section view."""
     lo, hi = full_range(dtype)
     out = [{"min": lo, "max": hi, "gamma": 1.0} for _ in range(n_channels)]
-    saved = project.get_slice(sid).get("levels") if sid is not None else None
+    saved = None
+    if sid is not None and key == "levels":
+        saved = project.get_slice(sid).get("levels")
     if saved is None:
-        saved = project.data.get("levels")
+        saved = project.data.get(key)
     for level, s in zip(out, saved or []):
         level.update({k: float(s[k]) for k in ("min", "max", "gamma") if k in s})
     return out
 
 
-def store_levels(project, levels: list[dict], sid: int | None = None) -> None:
-    """Save levels as the project's shared levels, or as one section's own."""
+def store_levels(project, levels: list[dict], sid: int | None = None,
+                 key: str = "levels") -> None:
+    """Save levels under ``key`` on the project, or as one section's own levels."""
     clean = [{k: round(float(lv[k]), 4) for k in ("min", "max", "gamma")} for lv in levels]
     if sid is None:
-        project.data["levels"] = clean
+        project.data[key] = clean
     else:
         project.get_slice(sid)["levels"] = clean
     project.save()
+
+
+def equalize_channels(img: np.ndarray, mask: np.ndarray | None = None,
+                      clip: tuple[float, float] = (1.0, 99.0)) -> np.ndarray:
+    """Stretch each channel's tissue pixels to the dtype's full range.
+
+    Used for the slide overview so sections imaged with different laser settings
+    look about the same before the shared overview brightness controls are applied.
+    ``clip`` is the low/high percentile of tissue values mapped to black / white."""
+    img = np.asarray(img)
+    out = np.zeros_like(img)
+    if mask is None:
+        mask = img.any(axis=-1) if img.ndim == 3 else img > 0
+    mask = np.asarray(mask, dtype=bool)
+    if mask.shape != img.shape[:2] or not mask.any():
+        mask = np.ones(img.shape[:2], bool)
+    lo_out, hi_out = full_range(img.dtype)
+    for c in range(img.shape[-1] if img.ndim == 3 else 1):
+        channel = img[..., c] if img.ndim == 3 else img
+        vals = channel[mask]
+        lo, hi = (float(v) for v in np.percentile(vals, list(clip)))
+        if not np.isfinite(lo):
+            lo = 0.0
+        if not np.isfinite(hi) or hi <= lo:
+            # Flat channel (e.g. saturated or empty): show tissue at full brightness.
+            filled = np.zeros_like(channel)
+            filled[mask] = hi_out
+            if img.ndim == 3:
+                out[..., c] = filled.astype(img.dtype, copy=False)
+            else:
+                out = filled.astype(img.dtype, copy=False)
+            continue
+        stretched = (channel.astype(np.float32) - lo) / (hi - lo)
+        stretched = np.clip(stretched, 0.0, 1.0) * (hi_out - lo_out) + lo_out
+        if img.ndim == 3:
+            out[..., c] = stretched.astype(img.dtype, copy=False)
+        else:
+            out = stretched.astype(img.dtype, copy=False)
+    if img.ndim == 3:
+        out[~mask] = 0
+    else:
+        out = np.where(mask, out, 0)
+    return np.ascontiguousarray(out)
 
 
 def layer_levels(layers) -> list[dict]:

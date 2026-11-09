@@ -508,10 +508,18 @@ class SliceView:
     # ---------------------------------------------------------------- cells
     def _load_cells(self) -> None:
         df = self.project.load_cells(self.sid)
-        types = ["cell"] if df is None or not len(df) else list(dict.fromkeys(df["cell_type"]))
+        from_slice = ([] if df is None or not len(df)
+                      else list(dict.fromkeys(df["cell_type"].astype(str))))
+        # Project-wide types first so every section shares red/green/etc.; keep any
+        # orphan names already present on this section's CSV.
+        types = list(dict.fromkeys(self.project.cell_types() + from_slice))
+        if types != list(self.project.data.get("cell_types") or []):
+            self.project.data["cell_types"] = types
+            self.project.save()
         for name in types:
-            sub = None if df is None else df[df["cell_type"] == name]
-            yx = np.empty((0, 2)) if sub is None else sub[["y_px", "x_px"]].to_numpy(float)
+            sub = None if df is None else df[df["cell_type"].astype(str) == name]
+            yx = (np.empty((0, 2)) if sub is None or not len(sub)
+                  else sub[["y_px", "x_px"]].to_numpy(float))
             self._add_cell_layer(name, yx)
         self._current_type = types[0]
 
@@ -554,6 +562,7 @@ class SliceView:
         self.project.save()
 
     def add_cell_type(self, name: str) -> None:
+        self.project.add_cell_type(name)
         if name not in self.cell_layers:
             self._add_cell_layer(name, np.empty((0, 2)))
         self.cells_widget.set_types(list(self.cell_layers), name)

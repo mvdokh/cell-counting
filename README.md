@@ -94,13 +94,35 @@ their names mean:
 | `atlas`, `section_spacing_um` | `allen_mouse_25um`, 80 | Used when the project is created |
 
 The slide view then shows every section at true size in its column/row, cropped to
-its tissue. Every section is drawn with the same brightness levels, the project's
-shared levels (see the *Brightness* panel below), so differences in brightness
-between sections are real. Click a section to select it (its box turns cyan) and double-click it, or
-use *Open selected section*, to align and count it exactly as above. Z-stacks are max-projected, and mosaics
-that were saved as separate tiles are stitched from the tile positions in the file.
-Click *Rescan folder* after editing the config or adding images; existing sections
-keep their alignments and cells.
+its tissue. Each section is equalized per channel first (so different laser settings
+look about the same), and the *Overview brightness* panel adjusts the shared display.
+Click a section to select it (its box turns cyan) and double-click it, or use *Open
+selected section*, to align and count it exactly as above. Z-stacks are max-projected,
+and mosaics that were saved as separate tiles are stitched from the tile positions in
+the file. Click *Rescan folder* after editing the config or adding images; existing
+sections keep their alignments and cells.
+
+### Several slides in one experiment
+
+If each physical slide is a numbered folder under the experiment
+(`PCRt_Rabies_2/7`, `PCRt_Rabies_2/8`, …) with a matching `7_project`, `8_project`
+beside it, open the experiment folder itself:
+
+```powershell
+slicereg open "E:\Histology\Zeiss\PCRt_Rabies_2"
+```
+
+That creates any missing slide projects and opens the first slide; the **Slide** menu
+switches between them. Opening a single slide folder still works and finds the same
+siblings. Section order for plots and 3D runs through the slides in numeric order,
+then by the folder config's column/row order within a slide — so after the last
+section of slide 7 (e.g. `c5_r3`) comes the first of slide 8 (`c1_r1`).
+
+- **Plot AP & pitch (all slides)** and **Plot cells by region (all slides)** use
+  every slide's alignments and cells.
+- **3D view in brainrender (all slides)** draws cells and section images from the
+  whole experiment (title = the experiment folder name). Use `--this-slide` on the
+  command line to render only the current project.
 
 Folders of JPG, PNG or BMP exports work too. They have no pixel size in them, so set
 `pixel_um` if you know it (otherwise sizes are in pixels). For example, for RGB JPGs
@@ -172,13 +194,12 @@ Options for `open`:
      or above the right handle are full brightness;
    - a *Gamma* slider: below 1 brightens dim signal, above 1 darkens it.
 
-   *Auto (this section)* sets each channel's range once from this section's tissue,
-   clipping the given percentage of the darkest and brightest pixels. *Full range*
-   goes back to the raw values. The levels are saved with the project and shared by
-   every section and by the slide overview. napari's own layer controls (contrast
-   limits, gamma) change the same levels. Tick *Separate levels for this section*
-   to give one section its own levels, for example one imaged with different
-   settings.
+   *Auto* sets each channel's range once from this section's tissue, clipping the
+   given percentage of the darkest and brightest pixels. *Full range* goes back to
+   the raw values. The levels are saved with the project and shared by every section
+   (the slide overview has its own *Overview brightness* panel). napari's own layer
+   controls (contrast limits, gamma) change the same levels. Tick *Separate levels
+   for this section* to give one section its own levels.
 5. **1. Align to atlas** tab: set the AP position, tilt, rotation, scale and centre
    until the atlas outline matches the tissue. *Predict alignment with DeepSlice*
    (Allen mouse atlases only, see [Optional: DeepSlice](#optional-deepslice)) fills
@@ -209,15 +230,18 @@ Options for `open`:
    the structure opacity and hemisphere, the whole-brain opacity, the surface style
    (smooth by default; *Cartoon* is brainrender's flat outlined look), the starting
    view, the cell size (sphere radius in um, 25 by default; cells are always drawn
-   matte, whatever the surface style), and whether to show section images, cells (per
-   cell type), the whole brain, axes / scale bars (off by default), the small
-   orientation brain in the corner and the title. The last choices are remembered.
+   matte, whatever the surface style), and whether to show section images, cells, the
+   whole brain, axes / scale bars (off by default), the small
+   orientation brain in the corner and the title. Under *Cell types to show*, uncheck
+   a type (for example green or red) to leave it out. A type whose name is a colour
+   is drawn in that colour. The last choices are remembered.
    In the 3D window, buttons on the left snap the camera to a 3/4, front, back, left,
    right, top or bottom view. *Back, low* looks from behind and about 12 degrees
    below, aimed at the caudal end of IRt/PCRt, with the whole brain in frame. *Back,
    low, zoomed* uses the same angle but frames just IRt/PCRt. Both work whether or
    not those structures are shown. *Hide title* / *Show title* toggles the title, for
-   example before saving. *Save image* asks where to save a PNG at twice the window
+   example before saving, and *Hide green* / *Hide red* (one button per cell type)
+   toggles that type. *Save image* asks where to save a PNG at twice the window
    resolution (default folder `renders` in the project).
 
 Structure names can be Allen CCF acronyms (case doesn't matter) or these Paxinos

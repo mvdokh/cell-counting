@@ -81,3 +81,22 @@ def test_top_regions_ranks_by_count():
     assert list(top["left"]) == [2, 2] and list(top["right"]) == [1, 0]
     assert list(top["cells_rfp"]) == [2, 2] and list(top["cells_gfp"]) == [1, 0]
     assert top.loc[0, "percent_of_cells"] == 50.0
+
+
+def test_cell_type_color_follows_the_name():
+    from slicereg.export import cell_type_color
+
+    assert cell_type_color("green") == cell_type_color("GFP")
+    assert cell_type_color("red") != cell_type_color("green")
+    assert cell_type_color("cFos") == cell_type_color("cFos", 0)
+
+
+def test_cell_types_are_shared_across_the_project(project):
+    assert project.cell_types() == ["cell"]
+    project.add_cell_type("green")
+    project.add_cell_type("red")
+    assert project.cell_types() == ["cell", "green", "red"]
+    project.add_cell_type("green")  # no duplicate
+    assert project.cell_types() == ["cell", "green", "red"]
+    reloaded = Project.load(project.root)
+    assert reloaded.cell_types() == ["cell", "green", "red"]

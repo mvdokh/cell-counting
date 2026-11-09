@@ -1,7 +1,8 @@
-"""Brightness levels for the section image: per-channel range, gamma and histogram.
+"""Brightness levels for section and slide-overview images.
 
-Levels are only ever changed by the user (here or in napari's layer controls) and are
-saved in the project, shared by every section unless a section has its own.
+Section levels are shared across sections unless one has its own. Overview levels
+(``overview_levels``) are separate: the overview equalizes each section first, then
+these controls fine-tune the display.
 """
 
 from __future__ import annotations
@@ -21,13 +22,13 @@ GAMMA_RANGE = (0.2, 2.0)
 
 
 def save_levels_on_change(project, layers, sid: int | None = None,
-                          delay_ms: int = 400) -> QTimer:
+                          delay_ms: int = 400, key: str = "levels") -> QTimer:
     """Save the layers' levels (debounced) whenever they change in napari's controls.
     Keep the returned timer alive for as long as the layers are shown."""
     timer = QTimer()
     timer.setSingleShot(True)
     timer.setInterval(delay_ms)
-    timer.timeout.connect(lambda: store_levels(project, layer_levels(layers), sid))
+    timer.timeout.connect(lambda: store_levels(project, layer_levels(layers), sid, key=key))
 
     def restart(_event=None) -> None:
         timer.start()
@@ -163,13 +164,29 @@ class _ChannelRow:
 
 
 class BrightnessWidget(QGroupBox):
-    def __init__(self, view):
-        super().__init__("Brightness")
+    def __init__(self, view=None, *, project=None, layers=None, image=None,
+                 sid: int | None = None, slice_entry: dict | None = None,
+                 levels_key: str = "levels", title: str = "Brightness",
+                 allow_separate: bool | None = None):
+        super().__init__(title)
+        if view is not None:
+            project = view.project
+            layers = view.image_layers
+            image = view.image
+            sid = view.sid
+            slice_entry = view.slice
+            if allow_separate is None:
+                allow_separate = True
+        if allow_separate is None:
+            allow_separate = sid is not None and levels_key == "levels"
         self.view = view
-        self.project = view.project
-        self.sid = view.sid
-        self.layers = list(view.image_layers)
-        dtype = view.image.dtype
+        self.project = project
+        self.sid = sid
+        self.slice_entry = slice_entry if slice_entry is not None else {}
+        self.layers = list(layers)
+        self.levels_key = levels_key
+        self.allow_separate = allow_separate
+        dtype = image.dtype
         self.is_int = bool(np.issubdtype(dtype, np.integer))
         self.range = full_range(dtype)
         self.syncing = False
@@ -179,23 +196,31 @@ class BrightnessWidget(QGroupBox):
         self._save_timer.setInterval(400)
         self._save_timer.timeout.connect(self._save)
 
-        self.separate = QCheckBox("Separate levels for this section")
-        self.separate.setChecked("levels" in view.slice)
-        self.separate.setToolTip(
-            "Off: these levels are shared by every section and the slide overview.\n"
-            "On: this section keeps its own levels (e.g. if it was imaged differently).")
-        self.separate.toggled.connect(self._on_separate)
+        self.separate = None
+        if allow_separate:
+            self.separate = QCheckBox("Separate levels for this section")
+            self.separate.setChecked("levels" in self.slice_entry)
+            self.separate.setToolTip(
+                "Off: these levels are shared by every section.\n"
+                "On: this section keeps its own levels (e.g. if it was imaged differently).\n"
+                "The slide overview has its own brightness controls.")
+            self.separate.toggled.connect(self._on_separate)
 
-        img = view.image
-        step = max(1, int(np.ceil(np.sqrt(img.shape[0] * img.shape[1] / HIST_SAMPLE_PX))))
-        sample = img[::step, ::step]
-        tissue = sample.any(axis=2)          # leave out the blanked background
+        step = max(1, int(np.ceil(np.sqrt(image.shape[0] * image.shape[1] / HIST_SAMPLE_PX))))
+        sample = image[::step, ::step]
+        tissue = sample.any(axis=2) if sample.ndim == 3 else sample > 0
         if not tissue.any():
-            tissue[:] = True
-        self._tissue_values = [sample[..., i][tissue] for i in range(sample.shape[2])]
+            tissue = np.ones(sample.shape[:2], bool)
+        n_ch = sample.shape[2] if sample.ndim == 3 else 1
+        self._tissue_values = [
+            (sample[..., i] if sample.ndim == 3 else sample)[tissue] for i in range(n_ch)]
 
         lay = QVBoxLayout(self)
-        hint = QLabel("Levels are only changed by you; they are saved with the project.")
+        if levels_key == "overview_levels":
+            hint = QLabel("Each section is equalized first so different laser settings "
+                          "look similar; these controls adjust the overview display.")
+        else:
+            hint = QLabel("Levels are only changed by you; they are saved with the project.")
         hint.setWordWrap(True)
         lay.addWidget(hint)
         self.rows = []
@@ -205,10 +230,9 @@ class BrightnessWidget(QGroupBox):
             self.rows.append(row)
 
         auto_row = QHBoxLayout()
-        self.auto_btn = QPushButton("Auto (this section)")
-        self.auto_btn.setToolTip("Set each channel's range once from this section's tissue, "
-                                 "clipping the given percentage of the darkest and brightest "
-                                 "pixels. Nothing changes automatically afterwards.")
+        self.auto_btn = QPushButton("Auto")
+        self.auto_btn.setToolTip("Set each channel's range from the tissue, clipping the "
+                                 "given percentage of the darkest and brightest pixels.")
         self.auto_btn.clicked.connect(self.auto)
         self.clip = QDoubleSpinBox()
         self.clip.setRange(0.0, 10.0)
@@ -224,7 +248,8 @@ class BrightnessWidget(QGroupBox):
                         "possible value, gamma 1.")
         full.clicked.connect(self.full_range)
         lay.addWidget(full)
-        lay.addWidget(self.separate)
+        if self.separate is not None:
+            lay.addWidget(self.separate)
         self._ready = True
 
     def changed(self) -> None:
@@ -232,8 +257,10 @@ class BrightnessWidget(QGroupBox):
             self._save_timer.start()
 
     def _save(self) -> None:
-        store_levels(self.project, layer_levels(self.layers),
-                     self.sid if self.separate.isChecked() else None)
+        sid = None
+        if self.allow_separate and self.separate is not None and self.separate.isChecked():
+            sid = self.sid
+        store_levels(self.project, layer_levels(self.layers), sid, key=self.levels_key)
 
     def auto(self) -> None:
         clip = float(self.clip.value())
@@ -249,12 +276,13 @@ class BrightnessWidget(QGroupBox):
 
     def _on_separate(self, on: bool) -> None:
         if on:
-            store_levels(self.project, layer_levels(self.layers), self.sid)
+            store_levels(self.project, layer_levels(self.layers), self.sid, key=self.levels_key)
             return
-        self.view.slice.pop("levels", None)
+        self.slice_entry.pop("levels", None)
         self.project.save()
         apply_levels(self.layers, get_levels(self.project, len(self.layers),
-                                             self.view.image.dtype))
+                                             np.dtype(self.layers[0].data.dtype),
+                                             key=self.levels_key))
 
     def disconnect_layers(self) -> None:
         self._save_timer.stop()

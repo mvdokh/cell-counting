@@ -107,6 +107,7 @@ class SlideView:
         open_btn.clicked.connect(self._on_open_selected)
         lay.addWidget(open_btn)
         for text, slot in [("Plot AP && pitch per section", self._on_plot),
+                           ("Plot cells by region", self._on_regions_plot),
                            ("Export all cells (CSV)", self._on_export),
                            ("3D view in brainrender", self._on_render)]:
             b = QPushButton(text)
@@ -255,10 +256,24 @@ class SlideView:
         PositionsPlot(self.project, self._open,
                       parent=getattr(self.viewer.window, "_qt_window", None)).exec()
 
+    def _on_regions_plot(self) -> None:
+        from .regions_plot import RegionsPlot
+
+        cells = collect_cells(self.project)
+        if not len(cells):
+            QMessageBox.information(None, "No cells",
+                                    "Count cells on at least one section first.")
+            return
+        RegionsPlot(cells, parent=getattr(self.viewer.window, "_qt_window", None),
+                    save_dir=self.project.root).exec()
+
     def _on_render(self) -> None:
         cells = collect_cells(self.project)
+        counted = ([] if cells.empty or "cell_type" not in cells.columns
+                   else list(dict.fromkeys(cells["cell_type"].astype(str))))
+        types = list(dict.fromkeys([*self.project.cell_types(), *counted]))
         dlg = RenderDialog(self.project, atlas_structures(self.project.data["atlas"]),
-                           list(dict.fromkeys(cells["cell_type"])),
+                           types,
                            parent=getattr(self.viewer.window, "_qt_window", None))
         if not dlg.exec():
             return

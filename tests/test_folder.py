@@ -184,6 +184,18 @@ def test_auto_crop_keeps_dim_tissue_and_detached_pieces():
     assert mask[110, 150] and mask[100, 50] and mask[100, 250] and not mask[5, 150]
 
 
+def test_auto_crop_keeps_large_edge_touching_brainstem():
+    """Cerebellum and brainstem can be separate pieces that both touch the crop edge."""
+    from slicereg.io import tissue_mask
+
+    img = np.zeros((200, 200, 1), np.uint8)
+    img[0:90, 20:180] = 80                # cerebellum touching the top
+    img[110:200, 40:160] = 60             # brainstem touching the bottom (~80% area)
+    img[0:8, 190:200] = 90                # small neighbour scrap on the edge
+    mask = tissue_mask(img, 20, True, 3, largest_only=True)
+    assert mask[40, 100] and mask[150, 100] and not mask[4, 195]
+
+
 def test_folder_without_matching_files_explains(tmp_path):
     with pytest.raises(FileNotFoundError, match="pattern"):
         Project.open_or_create(tmp_path)

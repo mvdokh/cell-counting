@@ -61,6 +61,11 @@ def main(argv=None) -> None:
                           help="radius of the cell spheres in um")
     p_render.add_argument("--no-title", action="store_true",
                           help="hide the title at the top of the window")
+    p_render.add_argument("--all-slides", action="store_true",
+                          help="include every numbered sibling slide under the experiment "
+                               "(default when the project is a numbered slide folder)")
+    p_render.add_argument("--this-slide", action="store_true",
+                          help="only this project, even if sibling slides exist")
     p_render.add_argument("--screenshot", help="save a PNG instead of opening a window")
 
     p_split = sub.add_parser("split-mosaic",
@@ -129,7 +134,8 @@ def main(argv=None) -> None:
                region_alpha=args.alpha, hemisphere=args.hemisphere,
                brain_alpha=args.brain_alpha, style=args.style, show_axes=args.axes,
                show_inset=not args.no_inset, radius=args.cell_size,
-               show_title=not args.no_title)
+               show_title=not args.no_title,
+               all_slides=args.all_slides, this_slide=args.this_slide)
 
 
 if __name__ == "__main__":

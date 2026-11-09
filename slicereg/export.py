@@ -9,6 +9,27 @@ from .transform import Alignment, SliceTransform
 
 CELL_COLORS = ["#ff5050", "#50ff50", "#50b0ff", "#ffff50", "#ff50ff", "#50ffff"]
 
+# Names that should keep a fixed colour in the 3D view, so "green" stays green even
+# when another type is hidden.
+CELL_TYPE_COLORS = {
+    "red": "#e04040", "rfp": "#e04040",
+    "green": "#40c040", "gfp": "#40c040",
+    "blue": "#4080e0", "nissl": "#4080e0",
+    "yellow": "#d0d040", "magenta": "#e040e0", "cyan": "#40d0d0", "orange": "#e08040",
+}
+
+
+def cell_type_color(name: str, index: int = 0) -> str:
+    """Colour for a cell type: a named colour when the name says so, otherwise the
+    rotating palette."""
+    key = str(name).strip().lower()
+    if key in CELL_TYPE_COLORS:
+        return CELL_TYPE_COLORS[key]
+    for word, color in CELL_TYPE_COLORS.items():
+        if word in key.split():
+            return color
+    return CELL_COLORS[index % len(CELL_COLORS)]
+
 CELL_COLUMNS = ["slice_id", "cell_type", "x_px", "y_px", "ap_um", "dv_um", "ml_um",
                 "region_id", "region_acronym", "region_name", "hemisphere"]
 

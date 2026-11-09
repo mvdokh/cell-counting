@@ -5,12 +5,15 @@ from __future__ import annotations
 import cv2
 import numpy as np
 from qtpy.QtCore import Qt
-from qtpy.QtWidgets import (QApplication, QLabel, QListWidget, QListWidgetItem, QMessageBox,
-                            QProgressDialog, QPushButton, QVBoxLayout, QWidget)
+from qtpy.QtWidgets import (QApplication, QComboBox, QHBoxLayout, QLabel, QListWidget,
+                            QListWidgetItem, QMessageBox, QProgressDialog, QPushButton,
+                            QVBoxLayout, QWidget)
 
+from ..experiment import (collect_experiment_cells, experiment_cell_types, experiment_root,
+                          open_slide_project, sibling_slides, slide_number)
 from ..folder import CONFIG_NAME, grid_layout
-from .brightness_widget import save_levels_on_change
-from .layers import add_channels, get_levels
+from .brightness_widget import BrightnessWidget, save_levels_on_change
+from .layers import add_channels, equalize_channels, get_levels
 from .slide_view import SlideView, _rect
 
 GAP_UM = 600.0
@@ -18,8 +21,11 @@ OVERVIEW_PX = 500  # overview width of the largest section, in screen-independen
 
 
 def _overview_tile(preview: np.ndarray, mask: np.ndarray, pad: float = 0.03) -> np.ndarray:
-    """The section's tissue only, cropped to it, with its raw values, so that one set
-    of brightness levels treats every section the same."""
+    """The section's tissue only, cropped to it and equalized per channel.
+
+    Equalization maps each channel's tissue percentiles to the full dtype range so
+    sections imaged with different laser settings look about the same; the overview
+    brightness panel then adjusts the shared display."""
     if mask.shape != preview.shape[:2] or not mask.any():
         mask = np.ones(preview.shape[:2], bool)
     out = preview.copy()
@@ -28,7 +34,8 @@ def _overview_tile(preview: np.ndarray, mask: np.ndarray, pad: float = 0.03) -> 
     p = int(pad * max(np.ptp(xs), np.ptp(ys)))
     y0, y1 = max(0, ys.min() - p), min(mask.shape[0], ys.max() + 1 + p)
     x0, x1 = max(0, xs.min() - p), min(mask.shape[1], xs.max() + 1 + p)
-    return out[y0:y1, x0:x1]
+    tile = out[y0:y1, x0:x1]
+    return equalize_channels(tile, mask[y0:y1, x0:x1])
 
 
 class FolderView(SlideView):
@@ -44,6 +51,9 @@ class FolderView(SlideView):
                               "count cells.")
 
     def deactivate(self) -> None:
+        if getattr(self, "brightness_widget", None) is not None:
+            self.brightness_widget.disconnect_layers()
+            self.brightness_widget = None
         if self._on_click in self.viewer.mouse_drag_callbacks:
             self.viewer.mouse_drag_callbacks.remove(self._on_click)
         super().deactivate()
@@ -127,11 +137,14 @@ class FolderView(SlideView):
             small = cv2.resize(previews[sid], (cw, rh), interpolation=cv2.INTER_AREA)
             small = small.reshape(rh, cw, -1)
             canvas[r0:r0 + rh, c0:c0 + cw, :small.shape[2]] = small
-        layers = add_channels(self.viewer, canvas, "slide",
-                              channels=self.project.data.get("channels"),
-                              levels=get_levels(self.project, n_ch, dtype),
-                              scale=(um_px, um_px), translate=(um_px / 2, um_px / 2))
-        self._levels_timer = save_levels_on_change(self.project, layers)
+        self._overview_image = canvas
+        self.image_layers = add_channels(
+            self.viewer, canvas, "slide",
+            channels=self.project.data.get("channels"),
+            levels=get_levels(self.project, n_ch, dtype, key="overview_levels"),
+            scale=(um_px, um_px), translate=(um_px / 2, um_px / 2))
+        self._levels_timer = save_levels_on_change(
+            self.project, self.image_layers, key="overview_levels")
         sids = list(boxes)
         self._edge_um = 2.5 * um_px
         self.shapes = self.viewer.add_shapes(
@@ -184,17 +197,54 @@ class FolderView(SlideView):
         w = QWidget()
         lay = QVBoxLayout(w)
         folder = self.project.data["source"]
-        help_text = QLabel(
+        exp = experiment_root(self.project)
+        slides = sibling_slides(self.project)
+        help = (
             f"Sections from {folder}, laid out by their column/row on the slide.\n"
             "Click a section to select it; double-click it (or a list entry) to align it "
             "and count cells.\n"
             "Labels: name, 'A' = aligned, (n) = cells counted.\n"
-            "Every section is shown with the same brightness levels (set them in a "
-            "section's Brightness panel, or with napari's layer controls here).\n"
+            "Overview brightness is equalized across sections (different laser settings "
+            "are matched), then adjusted with the panel below. Section brightness when "
+            "you open one is separate.\n"
+        )
+        if exp is not None and len(slides) > 1:
+            help += (
+                f"This slide is part of {exp.name}: use the slide menu to switch. "
+                "AP/pitch, region plots and brainrender use every slide in order "
+                "(after the last section of slide N comes the first of slide N+1).\n"
+            )
+        help += (
             f"File names, channels and section order are set in {CONFIG_NAME} in that "
-            "folder; click 'Rescan folder' after editing it or adding images.")
+            "folder; click 'Rescan folder' after editing it or adding images."
+        )
+        help_text = QLabel(help)
         help_text.setWordWrap(True)
         lay.addWidget(help_text)
+
+        if exp is not None and len(slides) > 1:
+            row = QHBoxLayout()
+            row.addWidget(QLabel("Slide"))
+            self.slide_combo = QComboBox()
+            current = slide_number(self.project)
+            for entry in slides:
+                n = entry["slide"]
+                mark = "" if entry["project"] is not None else " (new)"
+                self.slide_combo.addItem(f"{n}{mark}", entry)
+                if n == current:
+                    self.slide_combo.setCurrentIndex(self.slide_combo.count() - 1)
+            self.slide_combo.currentIndexChanged.connect(self._on_slide_changed)
+            row.addWidget(self.slide_combo, 1)
+            lay.addLayout(row)
+
+        if getattr(self, "image_layers", None):
+            self.brightness_widget = BrightnessWidget(
+                project=self.project, layers=self.image_layers, image=self._overview_image,
+                levels_key="overview_levels", title="Overview brightness",
+                allow_separate=False)
+            lay.addWidget(self.brightness_widget)
+        else:
+            self.brightness_widget = None
         rescan = QPushButton("Rescan folder")
         rescan.clicked.connect(self.app.show_slide)
         lay.addWidget(rescan)
@@ -204,13 +254,39 @@ class FolderView(SlideView):
         open_btn = QPushButton("Open selected section")
         open_btn.clicked.connect(self._on_open_selected)
         lay.addWidget(open_btn)
-        for text, slot in [("Plot AP && pitch per section", self._on_plot),
+        for text, slot in [("Plot AP && pitch (all slides)", self._on_plot),
+                           ("Plot cells by region (all slides)", self._on_regions_plot),
                            ("Export all cells (CSV)", self._on_export),
-                           ("3D view in brainrender", self._on_render)]:
+                           ("3D view in brainrender (all slides)", self._on_render)]:
             b = QPushButton(text)
             b.clicked.connect(slot)
             lay.addWidget(b)
         self.app.add_dock(w, "Slide")
+
+    def _on_slide_changed(self, index: int) -> None:
+        if index < 0 or not hasattr(self, "slide_combo"):
+            return
+        entry = self.slide_combo.itemData(index)
+        if entry is None:
+            return
+        if entry["slide"] == slide_number(self.project):
+            return
+        self.viewer.status = f"Opening slide {entry['slide']}..."
+        QApplication.processEvents()
+        try:
+            proj = open_slide_project(entry)
+        except Exception as e:
+            QMessageBox.warning(None, "Could not open slide", str(e))
+            # put the combo back
+            current = slide_number(self.project)
+            for i in range(self.slide_combo.count()):
+                if self.slide_combo.itemData(i)["slide"] == current:
+                    self.slide_combo.blockSignals(True)
+                    self.slide_combo.setCurrentIndex(i)
+                    self.slide_combo.blockSignals(False)
+                    break
+            return
+        self.app.switch_project(proj)
 
     def _refresh_labels(self) -> None:
         if self.shapes is not None:
@@ -250,3 +326,52 @@ class FolderView(SlideView):
             return
         QMessageBox.information(None, "Nothing selected",
                                 "Pick a section in the list first, or double-click a section.")
+
+    def _on_plot(self) -> None:
+        from .positions_plot import PositionsPlot
+
+        PositionsPlot(
+            self.project, self._open,
+            parent=getattr(self.viewer.window, "_qt_window", None),
+            open_experiment_section=self.app.open_experiment_section).exec()
+
+    def _on_regions_plot(self) -> None:
+        from .regions_plot import RegionsPlot
+
+        cells = collect_experiment_cells(self.project)
+        if not len(cells):
+            QMessageBox.information(None, "No cells",
+                                    "Count cells on at least one section first.")
+            return
+        # Drop the slide column for ranking helpers that expect CELL_COLUMNS.
+        plot_cells = cells.drop(columns=["slide"], errors="ignore")
+        title = "Cells by region"
+        if experiment_root(self.project) is not None:
+            title += " (all slides)"
+        RegionsPlot(plot_cells, title=title,
+                    parent=getattr(self.viewer.window, "_qt_window", None),
+                    save_dir=self.project.root).exec()
+
+    def _on_render(self) -> None:
+        import subprocess
+        import sys
+
+        from ..atlas import atlas_structures
+        from .render_dialog import RenderDialog
+
+        cells = collect_experiment_cells(self.project)
+        counted = ([] if cells.empty or "cell_type" not in cells.columns
+                   else list(dict.fromkeys(cells["cell_type"].astype(str))))
+        types = list(dict.fromkeys([*experiment_cell_types(self.project), *counted]))
+        dlg = RenderDialog(self.project, atlas_structures(self.project.data["atlas"]),
+                           types,
+                           parent=getattr(self.viewer.window, "_qt_window", None))
+        if not dlg.exec():
+            return
+        dlg.save()
+        args = [sys.executable, "-m", "slicereg", "render", str(self.project.root),
+                *dlg.cli_args()]
+        if experiment_root(self.project) is not None:
+            args.append("--all-slides")
+        subprocess.Popen(args)
+        self.viewer.status = "Opening brainrender in a separate window..."

@@ -100,9 +100,11 @@ def tissue_mask(img: np.ndarray, threshold: float, dark_background: bool,
     """Binary mask of the main piece(s) of tissue in a single section image.
 
     ``largest_only`` is for images known to hold one section: it keeps the biggest
-    piece plus detached pieces of it (at least 5% of its area, not touching the image
-    edge, e.g. a paraflocculus), and drops bits of neighbouring sections, which the
-    image edge cuts off."""
+    piece, any other large piece (at least 15% of its area, even if it touches the
+    image edge — e.g. brainstem below a detached cerebellum), and smaller detached
+    bits of the section that do not touch the edge (at least 5%, e.g. a
+    paraflocculus). Bits of neighbouring sections that the image edge cuts off are
+    usually small, so they are dropped."""
     g = np.asarray(img).max(axis=2).astype(np.float32)
     k = max(3, int(blur_px) | 1)
     g = cv2.GaussianBlur(g, (k, k), 0)
@@ -115,9 +117,12 @@ def tissue_mask(img: np.ndarray, threshold: float, dark_background: bool,
     areas = ndi.sum(m, lab, index=np.arange(1, n + 1))
     if largest_only:
         edge = np.unique(np.concatenate([lab[0], lab[-1], lab[:, 0], lab[:, -1]]))
-        inner = ~np.isin(np.arange(1, n + 1), edge)
-        keep = np.flatnonzero(inner & (areas >= 0.05 * areas.max())) + 1
-        return np.isin(lab, np.append(keep, int(np.argmax(areas)) + 1))
+        ids = np.arange(1, n + 1)
+        inner = ~np.isin(ids, edge)
+        keep_large = np.flatnonzero(areas >= 0.15 * areas.max()) + 1
+        keep_small = np.flatnonzero(inner & (areas >= 0.05 * areas.max())) + 1
+        return np.isin(lab, np.unique(np.concatenate(
+            [keep_large, keep_small, [int(np.argmax(areas)) + 1]])))
     keep = np.flatnonzero(areas >= 0.1 * areas.max()) + 1
     return np.isin(lab, keep)
 
@@ -150,12 +155,21 @@ class Project:
     @classmethod
     def open_or_create(cls, path: str | Path, project_dir: str | Path | None = None) -> "Project":
         """Open a project folder, or create a project for a slide image or a folder of
-        section images (``<name>_project`` next to it unless ``project_dir`` is given)."""
+        section images (``<name>_project`` next to it unless ``project_dir`` is given).
+
+        A parent experiment folder with numbered slide subfolders (``7/``, ``8/``, …)
+        opens the whole experiment: each slide gets a project if needed, and the first
+        slide is shown (use the Slide menu to switch)."""
         path = Path(path)
         if path.is_dir() and (path / "project.json").exists():
             return cls.load(path)
         if path.name == "project.json":
             return cls.load(path.parent)
+        from .experiment import is_experiment_dir, open_experiment
+
+        # Experiment root (not a single numbered slide folder with its own images).
+        if path.is_dir() and is_experiment_dir(path) and project_dir is None:
+            return open_experiment(path)
         root = Path(project_dir) if project_dir else path.with_name(path.stem + "_project")
         if (root / "project.json").exists():
             return cls.load(root)
@@ -169,6 +183,7 @@ class Project:
             "threshold": None,
             "dark_background": True,
             "section_spacing_um": 80.0,
+            "cell_types": ["cell"],
             "slices": [],
         }
         proj = cls(root, data)
@@ -192,6 +207,7 @@ class Project:
             "threshold": None,
             "dark_background": True,
             "section_spacing_um": float(config["section_spacing_um"]),
+            "cell_types": ["cell"],
             "slices": [],
         }
         proj = cls(root, data)
@@ -541,3 +557,33 @@ class Project:
 
     def save_cells(self, sid: int, df: pd.DataFrame) -> None:
         df.to_csv(self.slice_dir(sid) / "cells.csv", index=False)
+
+    def cell_types(self) -> list[str]:
+        """Project-wide cell-type names, shared by every section.
+
+        Falls back to types already counted on any section when the project has
+        no stored list yet (older projects)."""
+        stored = [str(t) for t in self.data.get("cell_types") or [] if str(t).strip()]
+        if stored:
+            return list(dict.fromkeys(stored))
+        found: list[str] = []
+        for s in self.slices:
+            df = self.load_cells(s["id"])
+            if df is None or not len(df) or "cell_type" not in df.columns:
+                continue
+            for name in df["cell_type"].astype(str):
+                if name not in found:
+                    found.append(name)
+        return found or ["cell"]
+
+    def add_cell_type(self, name: str) -> list[str]:
+        """Add a cell type for the whole project and save. Returns the full list."""
+        name = str(name).strip()
+        if not name:
+            raise ValueError("cell type name is empty")
+        types = self.cell_types()
+        if name not in types:
+            types.append(name)
+        self.data["cell_types"] = types
+        self.save()
+        return types

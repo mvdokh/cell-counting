@@ -115,7 +115,10 @@ class RenderDialog(QDialog):
         self.cell_size.setSuffix(" um")
         self.cell_size.setValue(float(opts["cell_size"]))
         self.cell_size.setToolTip("Radius of the sphere drawn for each cell.")
+        self.cell_types_label = QLabel("Cell types to show")
         self.cell_types = QListWidget()
+        self.cell_types.setToolTip("Uncheck a type to leave it out of the 3D view. "
+                                   "The same buttons are in the 3D window.")
         hidden = set(opts["hidden_cell_types"])
         for name in cell_types:
             item = QListWidgetItem(name)
@@ -124,7 +127,9 @@ class RenderDialog(QDialog):
             self.cell_types.addItem(item)
         self.cell_types.setMaximumHeight(90)
         self.cells.toggled.connect(self.cell_types.setEnabled)
+        self.cells.toggled.connect(self.cell_types_label.setEnabled)
         self.cell_types.setEnabled(opts["cells"])
+        self.cell_types_label.setEnabled(opts["cells"])
         self.cells.toggled.connect(self.cell_size.setEnabled)
         self.cell_size.setEnabled(opts["cells"])
         self.brain.toggled.connect(self.brain_alpha.setEnabled)
@@ -151,6 +156,7 @@ class RenderDialog(QDialog):
         for box in (self.slices, self.brain, self.axes, self.inset, self.title, self.cells):
             lay.addWidget(box)
         if cell_types:
+            lay.addWidget(self.cell_types_label)
             lay.addWidget(self.cell_types)
         hint = QLabel("In the 3D window, use the buttons on the left to snap to a view, hide "
                       "or show the title, or save an image (PNG at 2x window resolution).")

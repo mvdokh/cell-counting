@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .export import CELL_COLORS, NOT_REGIONS, collect_cells
+from .export import NOT_REGIONS, cell_type_color, collect_cells
 from .transform import Alignment, SliceTransform
 
 # Common Paxinos & Franklin abbreviations -> Allen CCF acronyms. Checked before the
@@ -238,29 +238,40 @@ def build_scene(project, show_slices: bool = True, top_regions: int = 5,
                 cell_types: list[str] | None = None, show_brain: bool = True,
                 region_alpha: float = 0.3, hemisphere: str = "both", radius: float = 25,
                 brain_alpha: float = 0.3, style: str = "plastic", show_axes: bool = False,
-                show_inset: bool = True, show_title: bool = True, offscreen: bool = False):
+                show_inset: bool = True, show_title: bool = True, offscreen: bool = False,
+                all_slides: bool = False, this_slide: bool = False):
     import brainrender
     from brainrender import Scene
     from brainrender.actors import Points
 
     from .atlas import Atlas
+    from .experiment import collect_experiment_cells, experiment_root, load_experiment_projects
 
     brainrender.settings.OFFSCREEN = offscreen
     brainrender.settings.SHADER_STYLE = style
     brainrender.settings.ROOT_ALPHA = float(brain_alpha)
     brainrender.settings.SHOW_AXES = show_axes
     atlas_name = project.data["atlas"]
+    in_experiment = experiment_root(project) is not None
+    use_all = in_experiment and not this_slide
+    if all_slides:
+        use_all = in_experiment
+    if use_all:
+        title = Path(project.data["source"]).parent.name
+    else:
+        title = Path(project.data["source"]).stem
     scene = Scene(root=show_brain, atlas_name=atlas_name, check_latest=False,
-                  inset=show_inset, title=Path(project.data["source"]).stem)
+                  inset=show_inset, title=title)
     if not show_title:
         set_title_visible(scene, False)
-    cells = collect_cells(project)
+    cells = collect_experiment_cells(project) if use_all else collect_cells(project)
+    cells = cells.drop(columns=["slide"], errors="ignore")
     if cell_types:
         cells = cells[cells["cell_type"].isin(cell_types)]
     if show_cells:
         for i, (ctype, df) in enumerate(cells.groupby("cell_type", sort=False)):
             scene.add(Points(df[["ap_um", "dv_um", "ml_um"]].to_numpy(float),
-                             name=str(ctype), colors=CELL_COLORS[i % len(CELL_COLORS)],
+                             name=str(ctype), colors=cell_type_color(ctype, i),
                              radius=radius))
 
     regions = []  # (acronym, colour or None for the atlas colour)
@@ -288,10 +299,13 @@ def build_scene(project, show_slices: bool = True, top_regions: int = 5,
 
     if show_slices:
         atlas = Atlas(atlas_name)
-        for s in project.slices:
-            if project.status(s["id"])["aligned"]:
-                scene.add(slice_mesh(atlas, project, s["id"]), names=f"slice_{s['id']:02d}",
-                          classes="section")
+        projects = (load_experiment_projects(project) if use_all
+                    else [(None, project)])
+        for slide, proj in projects:
+            for s in proj.slices:
+                if proj.status(s["id"])["aligned"]:
+                    tag = (f"s{slide}_" if slide is not None else "") + f"slice_{s['id']:02d}"
+                    scene.add(slice_mesh(atlas, proj, s["id"]), names=tag, classes="section")
     _restyle(scene)
     return scene
 
@@ -333,20 +347,28 @@ class WindowControls:
         plt = scene.plotter
         self.buttons = []
         self.title_button = None
-        entries = [([VIEW_LABELS[v]], lambda *_, v=v: self.show_view(v)) for v in VIEWS]
+        entries = [([VIEW_LABELS[v]], lambda *_, v=v: self.show_view(v), ["#e0e0e0"])
+                   for v in VIEWS]
         if title_actors(scene):
             entries.append((["Hide title", "Show title"] if title_visible(scene) else
-                            ["Show title", "Hide title"], self.toggle_title))
-        entries.append((["Save image"], lambda *_: self.save_image()))
-        for i, (states, fn) in enumerate(entries):
-            pos = (0.08, 0.95 - 0.05 * i - (0.025 if i >= len(VIEWS) else 0))
+                            ["Show title", "Hide title"], self.toggle_title, ["#e0e0e0"]))
+        for actor in scene.get_actors(br_class="Points"):
+            label = str(getattr(actor, "name", "") or "cells")
+            entries.append(([f"Hide {label}", f"Show {label}"],
+                            self._toggle_points(actor),
+                            [cell_type_color(label), "#e0e0e0"]))
+        entries.append((["Save image"], lambda *_: self.save_image(), ["#e0e0e0"]))
+        for i, (states, fn, colors) in enumerate(entries):
+            pos = (0.08, 0.95 - 0.045 * i - (0.02 if i >= len(VIEWS) else 0))
             b = plt.add_button(fn, states=states, c=["k"] * len(states),
-                               bc=["#e0e0e0"] * len(states), pos=pos, size=16,
-                               font="Arial", bold=False)
+                               bc=colors * len(states) if len(colors) == 1 else colors,
+                               pos=pos, size=15, font="Arial", bold=False)
             if b is not None:
                 self.buttons.append(b)
                 if fn == self.toggle_title:
                     self.title_button = b
+                if getattr(fn, "button", None) is None and hasattr(fn, "button"):
+                    fn.button = b
         import vedo
 
         self.message = vedo.Text2D("", pos="bottom-left", s=0.8, c="k")
@@ -362,6 +384,21 @@ class WindowControls:
         plt.camera.SetViewUp(cam["viewup"])
         plt.renderer.ResetCameraClippingRange()
         plt.render()
+
+    def _toggle_points(self, actor):
+        """Button callback that shows or hides one cell-type point cloud."""
+        def fn(*_):
+            mesh = actor._mesh
+            if mesh.actor.GetVisibility():
+                mesh.off()
+            else:
+                mesh.on()
+            if fn.button is not None:
+                fn.button.switch()
+            self.scene.plotter.render()
+
+        fn.button = None
+        return fn
 
     def toggle_title(self, *_) -> None:
         set_title_visible(self.scene, not title_visible(self.scene))

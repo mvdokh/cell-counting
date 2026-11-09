@@ -25,10 +25,20 @@ class _CloseGuard(QObject):
         return False
 
 
+def _window_title(project: Project) -> str:
+    from ..experiment import experiment_root, slide_number
+
+    source = Path(project.data["source"])
+    root = experiment_root(project)
+    if root is not None:
+        return f"slicereg - {root.name} (slide {slide_number(project)})"
+    return f"slicereg - {source.name}"
+
+
 class App:
     def __init__(self, project: Project):
         self.project = project
-        self.viewer = napari.Viewer(title=f"slicereg - {Path(project.data['source']).name}")
+        self.viewer = napari.Viewer(title=_window_title(project))
         self._atlas: Atlas | None = None
         self._docks = []
         self.view = None
@@ -85,6 +95,32 @@ class App:
         if self.view is not None and not self.view.can_leave():
             return
         self._set_view(SliceView(self, sid))
+
+    def switch_project(self, project: Project) -> None:
+        """Move to another slide's project in the same experiment."""
+        if self.view is not None and not self.view.can_leave():
+            return
+        if project.root.resolve() == self.project.root.resolve():
+            self.show_slide()
+            return
+        self.project = project
+        if self._atlas is not None and self._atlas.name != project.data.get("atlas"):
+            self._atlas = None
+        self.viewer.title = _window_title(project)
+        self.show_slide()
+
+    def open_experiment_section(self, ref: dict) -> None:
+        """Open a section that may live on another slide (from an experiment plot)."""
+        proj = ref["project"]
+        sid = int(ref["sid"])
+        if proj.root.resolve() != self.project.root.resolve():
+            if self.view is not None and not self.view.can_leave():
+                return
+            self.project = proj
+            if self._atlas is not None and self._atlas.name != proj.data.get("atlas"):
+                self._atlas = None
+            self.viewer.title = _window_title(proj)
+        self.open_slice(sid)
 
 
 def run(path: str, project_dir: str | None = None) -> None:
