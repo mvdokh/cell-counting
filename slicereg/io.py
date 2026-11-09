@@ -303,14 +303,20 @@ class Project:
             self._shift_slice_data(sid, old[0] - crop[0], old[1] - crop[1], crop)
         s["crop"] = [int(v) for v in crop]
         s["auto_crop"] = bool(auto_crop)
-        mirror = bool(s.get("mirror"))
-        if mirror:
+        # Hemispheres CSV mirror, XOR any manual user flip (see flip_section_horizontal).
+        want = bool(s.get("mirror")) ^ bool(s.get("user_flipped", False))
+        if want:
             img = np.ascontiguousarray(img[:, ::-1])
         self._write_section(sid, img, blur_um=80.0, largest_only=True)
-        if mirror:
+        if want:
             self._mirror_slice_data(sid, img.shape[1])
-        s["mirrored"] = mirror
+        s["mirrored"] = want
         s["imported_file"] = s["file"]
+
+    @staticmethod
+    def _want_mirrored(s: dict) -> bool:
+        """Desired on-disk L/R flip: hemispheres ``mirror`` XOR manual ``user_flipped``."""
+        return bool(s.get("mirror", False)) ^ bool(s.get("user_flipped", False))
 
     def apply_hemispheres(self, atlas=None) -> list[int]:
         """Give every section the atlas's orientation: right hemisphere on the image's
@@ -318,17 +324,19 @@ class Project:
 
         Sections marked ``mirror`` (from the folder's hemispheres CSV) have their image,
         preview and mask mirrored left-right, with alignment, landmarks and cells
-        mirrored along so the atlas outline stays on the same tissue. Then, where the
-        hemispheres are known, an atlas fitted with its hemispheres the wrong way round
-        is mirrored (flip toggled, yaw negated): its outline doesn't move, but its left
-        and right swap. Cells are re-mapped so their hemisphere follows."""
+        mirrored along so the atlas outline stays on the same tissue. A manual
+        ``user_flipped`` flag (Flip horizontally in the slide view) is applied on top
+        of that, so Rescan does not undo user flips. Then, where the hemispheres are
+        known, an atlas fitted with its hemispheres the wrong way round is mirrored
+        (flip toggled, yaw negated): its outline doesn't move, but its left and right
+        swap. Cells are re-mapped so their hemisphere follows."""
         changed = []
         for s in self.slices:
             sid = s["id"]
             if not self.status(sid)["cropped"]:
                 continue
             moved = False
-            want = bool(s.get("mirror", False))
+            want = self._want_mirrored(s)
             if bool(s.get("mirrored", False)) != want:
                 self._mirror_files(sid)
                 self._mirror_slice_data(sid, s["size"][0])
@@ -379,6 +387,45 @@ class Project:
         if cells is not None:
             cells["x_px"] = width - 1 - cells["x_px"]
             self.save_cells(sid, cells)
+
+    def flip_section_horizontal(self, sid: int, *, mirror_alignment: bool = True) -> None:
+        """Flip the stored section image left-right and record a manual flip.
+
+        Sets ``user_flipped`` so ``apply_hemispheres`` / Rescan keep this orientation
+        (hemispheres CSV ``mirror`` XOR ``user_flipped``). Cell marks always move with
+        the image. If ``mirror_alignment`` is true, the atlas fit is transformed so the
+        outline stays on the same tissue; if false, the alignment is left unchanged in
+        image coordinates."""
+        s = self.get_slice(sid)
+        if not self.status(sid)["cropped"]:
+            raise FileNotFoundError(f"slice {sid} has no image to flip")
+        width = int(s["size"][0])
+        self._mirror_files(sid)
+        if mirror_alignment:
+            self._mirror_slice_data(sid, width)
+            cells = self.load_cells(sid)
+            al = self.load_alignment(sid)
+            if al is not None and cells is not None and len(cells):
+                from .atlas import Atlas
+                from .export import map_cells
+                from .transform import Alignment
+
+                xy = cells[["x_px", "y_px"]].to_numpy(float)
+                self.save_cells(sid, map_cells(Atlas(self.data["atlas"]),
+                                               Alignment.from_dict(al), xy,
+                                               cells["cell_type"].tolist(), sid))
+        else:
+            cells = self.load_cells(sid)
+            if cells is not None and len(cells):
+                cells = cells.copy()
+                cells["x_px"] = width - 1 - cells["x_px"].to_numpy(float)
+                self.save_cells(sid, cells)
+        s["user_flipped"] = not bool(s.get("user_flipped", False))
+        s["mirrored"] = self._want_mirrored(s)
+        self.save()
+        from .experiment import record_section_flip
+
+        record_section_flip(self, sid)
 
     def _crop_to_tissue(self, img: np.ndarray, pixel_um: float | None,
                         margin_um: float = 150.0) -> tuple[np.ndarray, list[int]]:
@@ -558,11 +605,34 @@ class Project:
     def save_cells(self, sid: int, df: pd.DataFrame) -> None:
         df.to_csv(self.slice_dir(sid) / "cells.csv", index=False)
 
-    def cell_types(self) -> list[str]:
-        """Project-wide cell-type names, shared by every section.
+    def load_notes(self, sid: int) -> str:
+        p = self.slice_dir(sid) / "notes.txt"
+        if not p.is_file():
+            return ""
+        return p.read_text(encoding="utf-8")
 
-        Falls back to types already counted on any section when the project has
-        no stored list yet (older projects)."""
+    def save_notes(self, sid: int, text: str) -> None:
+        d = self.slice_dir(sid)
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / "notes.txt"
+        text = text.replace("\r\n", "\n")
+        if not text.strip():
+            if p.exists():
+                p.unlink()
+            return
+        p.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
+
+    def cell_types(self) -> list[str]:
+        """Cell-type names shared by every section (and by sibling slides in an experiment).
+
+        Falls back to types already counted on any section when nothing is stored yet."""
+        from .experiment import experiment_cell_types_stored, experiment_root
+
+        root = experiment_root(self)
+        if root is not None:
+            shared = experiment_cell_types_stored(root)
+            if shared:
+                return shared
         stored = [str(t) for t in self.data.get("cell_types") or [] if str(t).strip()]
         if stored:
             return list(dict.fromkeys(stored))
@@ -576,14 +646,29 @@ class Project:
                     found.append(name)
         return found or ["cell"]
 
+    def set_cell_types(self, types: list[str]) -> list[str]:
+        """Replace the cell-type list for this project and any sibling slides."""
+        from .experiment import (experiment_root, load_experiment_projects,
+                                 save_experiment_cell_types)
+
+        types = list(dict.fromkeys(str(t).strip() for t in types if str(t).strip())) or ["cell"]
+        self.data["cell_types"] = types
+        self.save()
+        root = experiment_root(self)
+        if root is not None:
+            save_experiment_cell_types(root, types)
+            for _, proj in load_experiment_projects(self):
+                if list(proj.data.get("cell_types") or []) != types:
+                    proj.data["cell_types"] = types
+                    proj.save()
+        return types
+
     def add_cell_type(self, name: str) -> list[str]:
-        """Add a cell type for the whole project and save. Returns the full list."""
+        """Add a cell type for the project (and the whole experiment) and save."""
         name = str(name).strip()
         if not name:
             raise ValueError("cell type name is empty")
         types = self.cell_types()
         if name not in types:
             types.append(name)
-        self.data["cell_types"] = types
-        self.save()
-        return types
+        return self.set_cell_types(types)

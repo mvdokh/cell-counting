@@ -33,15 +33,20 @@ def _folder_project(tmp_path: Path, slide: int, sections: list[tuple[int, int]],
         # minimal written image so status looks cropped
         d = proj.slice_dir(s["id"])
         d.mkdir(parents=True, exist_ok=True)
-        tifffile.imwrite(d / "image.tif", np.zeros((10, 10, 3), np.uint8))
-        tifffile.imwrite(d / "preview.tif", np.zeros((10, 10, 3), np.uint8))
+        img = np.zeros((10, 10, 3), np.uint8)
+        img[:, :3] = 40   # left edge mark so horizontal flips are detectable
+        img[2:8, 2:8] = 80
+        tifffile.imwrite(d / "image.tif", img)
+        tifffile.imwrite(d / "preview.tif", img)
         import cv2
         cv2.imwrite(str(d / "mask.png"), np.ones((10, 10), np.uint8) * 255)
+        s["size"] = [10, 10]
         proj.save_alignment(s["id"], {
             "ap_um": ap_base + 80 * i, "pitch_deg": 1.0, "yaw_deg": 0.0,
             "rotation_deg": 0.0, "flip": False,
+            "scale_x": 0.1, "scale_y": 0.1, "tx": 5.0, "ty": 5.0,
             "plane_size_um": [1000.0, 800.0], "plane_centre_um": [0.0, 0.0],
-            "landmarks": [], "sigma": 1.0,
+            "landmarks": [], "sigma": 1.0, "atlas": "allen_mouse_25um",
         })
         cells = pd.DataFrame({
             "slice_id": [s["id"]], "cell_type": ["green"], "x_px": [5], "y_px": [5],
@@ -88,3 +93,48 @@ def test_open_experiment_folder_opens_first_slide(tmp_path):
     assert slide_number(proj) == 6
     again = Project.open_or_create(tmp_path)
     assert again.root == proj.root
+
+
+def test_cell_types_carry_across_experiment_slides(tmp_path):
+    p6 = _folder_project(tmp_path, 6, [(1, 1)], ap_base=5000)
+    p7 = _folder_project(tmp_path, 7, [(1, 1)], ap_base=5080)
+    p6.add_cell_type("green")
+    p6.add_cell_type("red")
+    p7 = Project.load(p7.root)
+    assert "green" in p7.cell_types() and "red" in p7.cell_types()
+    assert (tmp_path / "slicereg_experiment.json").is_file()
+
+
+def test_flip_manifest_lists_sections_per_animal(tmp_path):
+    import json
+
+    from slicereg.experiment import (collect_flipped_labels, save_experiment_flips,
+                                    sync_experiment_flips)
+
+    p7 = _folder_project(tmp_path, 7, [(5, 2), (5, 3)], ap_base=8000)
+    _folder_project(tmp_path, 8, [(1, 1)], ap_base=8160)
+    sid = p7.slices[0]["id"]
+    before = p7.load_image(sid)
+    p7.flip_section_horizontal(sid, mirror_alignment=False)
+    assert np.array_equal(p7.load_image(sid), before[:, ::-1])
+    assert p7.get_slice(sid).get("user_flipped") is True
+    cfg = json.loads((tmp_path / "slicereg_experiment.json").read_text(encoding="utf-8"))
+    assert "7/c5_r2" in cfg["flipped"]
+    assert collect_flipped_labels(p7) == ["7/c5_r2"]
+    # Flag cleared in project.json is restored from the animal manifest; disk already
+    # matches, so apply_hemispheres is a no-op.
+    p7.get_slice(sid)["user_flipped"] = False
+    p7.save()
+    sync_experiment_flips(p7)
+    assert p7.get_slice(sid).get("user_flipped") is True
+    assert p7.apply_hemispheres() == []
+    assert np.array_equal(p7.load_image(sid), before[:, ::-1])
+
+    # A manifest-only entry restores the flag on another section (file flip itself is
+    # covered in test_hemispheres; apply_hemispheres needs a full alignment to remap).
+    other = p7.slices[1]["id"]
+    save_experiment_flips(tmp_path, ["7/c5_r2", "7/c5_r3"])
+    sync_experiment_flips(p7)
+    assert p7.get_slice(other).get("user_flipped") is True
+    assert Project._want_mirrored(p7.get_slice(other)) is True
+    assert collect_flipped_labels(p7) == ["7/c5_r2", "7/c5_r3"]

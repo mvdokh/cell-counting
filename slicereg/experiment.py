@@ -18,6 +18,7 @@ from .io import Project
 _SLIDE_NAME = re.compile(r"^\d+$")
 _CNR_MIP = re.compile(r"^c\d+r\d+_mip\.lsm$", re.IGNORECASE)
 _IMAGE_GLOB = ("*.lsm", "*.tif", "*.tiff", "*.jpg", "*.jpeg", "*.png", "*.bmp")
+EXPERIMENT_CONFIG = "slicereg_experiment.json"
 
 
 def experiment_root(project: Project) -> Path | None:
@@ -137,6 +138,7 @@ def open_experiment(path: Path | str) -> Project:
             f"No slide folders with section images under {path}. "
             "Expected numbered folders like 6/, 7/ with .lsm files.")
     print(f"Experiment {path.name}: slides {', '.join(str(s) for s in opened)}")
+    sync_experiment_cell_types(first)
     return first
 
 
@@ -218,15 +220,160 @@ def collect_experiment_cells(project: Project) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
-def experiment_cell_types(project: Project) -> list[str]:
+def experiment_config_path(root: Path | str) -> Path:
+    return Path(root) / EXPERIMENT_CONFIG
+
+
+def load_experiment_config(root: Path | str) -> dict:
+    path = experiment_config_path(root)
+    if not path.is_file():
+        return {}
+    import json
+
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def experiment_cell_types_stored(root: Path | str) -> list[str]:
+    """Cell types saved for the whole experiment, or []."""
+    raw = load_experiment_config(root).get("cell_types") or []
+    return list(dict.fromkeys(str(t).strip() for t in raw if str(t).strip()))
+
+
+def save_experiment_cell_types(root: Path | str, types: list[str]) -> None:
+    import json
+
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    cfg = load_experiment_config(root)
+    cfg["cell_types"] = list(dict.fromkeys(str(t).strip() for t in types if str(t).strip()))
+    with open(experiment_config_path(root), "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2)
+
+
+def sync_experiment_cell_types(project: Project) -> list[str]:
+    """Union types from the experiment file and every slide; write them everywhere."""
+    root = experiment_root(project)
+    if root is None:
+        return project.cell_types()
     types: list[str] = []
+    for name in experiment_cell_types_stored(root):
+        if name not in types:
+            types.append(name)
     for _, proj in load_experiment_projects(project):
-        for name in proj.cell_types():
-            if name not in types:
+        for name in list(proj.data.get("cell_types") or []):
+            name = str(name).strip()
+            if name and name not in types:
                 types.append(name)
+        for s in proj.slices:
+            df = proj.load_cells(s["id"])
+            if df is None or not len(df) or "cell_type" not in df.columns:
+                continue
+            for name in df["cell_type"].astype(str):
+                if name not in types:
+                    types.append(name)
+    if not types:
+        types = ["cell"]
+    save_experiment_cell_types(root, types)
+    for _, proj in load_experiment_projects(project):
+        if list(proj.data.get("cell_types") or []) != types:
+            proj.data["cell_types"] = types
+            proj.save()
+    return types
+
+
+def experiment_cell_types(project: Project) -> list[str]:
+    root = experiment_root(project)
+    if root is not None:
+        return sync_experiment_cell_types(project)
+    types: list[str] = []
+    for name in project.cell_types():
+        if name not in types:
+            types.append(name)
     cells = collect_experiment_cells(project)
     if len(cells) and "cell_type" in cells.columns:
         for name in cells["cell_type"].astype(str):
             if name not in types:
                 types.append(name)
     return types or ["cell"]
+
+
+def _section_flip_label(slide: int | None, name: str) -> str:
+    return section_label(slide, name)
+
+
+def _slice_flip_label(project: Project, sid: int) -> str:
+    s = project.get_slice(sid)
+    name = s.get("name") or f"{sid:02d}"
+    return _section_flip_label(slide_number(project), name)
+
+
+def save_experiment_flips(root: Path | str, labels: list[str]) -> None:
+    """Write the animal-level list of manually flipped sections."""
+    import json
+
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    cfg = load_experiment_config(root)
+    cfg["flipped"] = sorted(dict.fromkeys(str(x) for x in labels if str(x).strip()))
+    with open(experiment_config_path(root), "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2)
+
+
+def collect_flipped_labels(project: Project) -> list[str]:
+    """Labels of sections with ``user_flipped`` across the experiment (or this project)."""
+    out = []
+    for slide, proj in load_experiment_projects(project):
+        for s in proj.slices:
+            if not s.get("user_flipped"):
+                continue
+            name = s.get("name") or f"{s['id']:02d}"
+            out.append(_section_flip_label(slide, name))
+    return sorted(dict.fromkeys(out))
+
+
+def record_section_flip(project: Project, sid: int) -> None:
+    """After toggling ``user_flipped``, refresh the animal (or project) flip manifest."""
+    root = experiment_root(project)
+    labels = collect_flipped_labels(project)
+    if root is not None:
+        save_experiment_flips(root, labels)
+        return
+    project.data["flipped"] = labels
+    project.save()
+
+
+def sync_experiment_flips(project: Project) -> list[str]:
+    """Merge the flip manifest with each slice's ``user_flipped`` flag.
+
+    Manifest entries set the flag; existing flags are kept and written back so the
+    animal-level list stays complete. Returns the flipped labels."""
+    root = experiment_root(project)
+    wanted: set[str] = set()
+    if root is not None:
+        wanted.update(str(x) for x in (load_experiment_config(root).get("flipped") or [])
+                      if str(x).strip())
+    else:
+        wanted.update(str(x) for x in (project.data.get("flipped") or []) if str(x).strip())
+
+    for slide, proj in load_experiment_projects(project):
+        dirty = False
+        for s in proj.slices:
+            name = s.get("name") or f"{s['id']:02d}"
+            label = _section_flip_label(slide, name)
+            if s.get("user_flipped"):
+                wanted.add(label)
+            elif label in wanted:
+                s["user_flipped"] = True
+                dirty = True
+        if dirty:
+            proj.save()
+
+    labels = sorted(wanted)
+    if root is not None:
+        save_experiment_flips(root, labels)
+    else:
+        if list(project.data.get("flipped") or []) != labels:
+            project.data["flipped"] = labels
+            project.save()
+    return labels

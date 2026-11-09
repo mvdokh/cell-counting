@@ -5,15 +5,16 @@ from __future__ import annotations
 import cv2
 import numpy as np
 from qtpy.QtCore import Qt
-from qtpy.QtWidgets import (QApplication, QComboBox, QHBoxLayout, QLabel, QListWidget,
-                            QListWidgetItem, QMessageBox, QProgressDialog, QPushButton,
-                            QVBoxLayout, QWidget)
+from qtpy.QtWidgets import (QApplication, QCheckBox, QComboBox, QHBoxLayout, QLabel,
+                            QListWidget, QListWidgetItem, QMessageBox, QProgressDialog,
+                            QPushButton, QVBoxLayout, QWidget)
 
 from ..experiment import (collect_experiment_cells, experiment_cell_types, experiment_root,
-                          open_slide_project, sibling_slides, slide_number)
+                          open_slide_project, sibling_slides, slide_number,
+                          sync_experiment_cell_types, sync_experiment_flips)
 from ..folder import CONFIG_NAME, grid_layout
-from .brightness_widget import BrightnessWidget, save_levels_on_change
-from .layers import add_channels, equalize_channels, get_levels
+from .brightness_widget import BrightnessWidget, proxy_layers_for, save_levels_on_change
+from .layers import add_channels, equalize_channels, get_levels, remap_levels
 from .slide_view import SlideView, _rect
 
 GAP_UM = 600.0
@@ -75,6 +76,9 @@ class FolderView(SlideView):
             QMessageBox.warning(None, "Hemispheres file not used",
                                 f"{error}\n\nSection orientation "
                                 "was left as it was.")
+        if experiment_root(self.project) is not None:
+            sync_experiment_cell_types(self.project)
+        sync_experiment_flips(self.project)
         self.viewer.status = "Checking section orientation..."
         QApplication.processEvents()
         changed = self.project.apply_hemispheres()
@@ -83,8 +87,8 @@ class FolderView(SlideView):
                               for sid in changed)
             QMessageBox.information(
                 None, "Sections mirrored",
-                f"Updated {len(changed)} section(s) from the hemispheres file so the right "
-                f"hemisphere is on the left of every image, as in the atlas: {names}.\n\n"
+                f"Updated {len(changed)} section(s) from the hemispheres file / flip "
+                f"manifest so orientation matches: {names}.\n\n"
                 "Alignments, landmarks and cells were mirrored along with the images; "
                 "export again to update the CSVs.")
 
@@ -121,6 +125,8 @@ class FolderView(SlideView):
                               tile.shape[0] * um_per_preview_px)
             previews[s["id"]] = tile
         if not sizes:
+            self._tiles = {}
+            self._placements = {}
             return {}
         corners = grid_layout(sizes, GAP_UM)
         um_px = max(max(w, h) for _, _, w, h in sizes.values()) / OVERVIEW_PX
@@ -130,13 +136,20 @@ class FolderView(SlideView):
         height = int(np.ceil(max(b[3] for b in boxes.values()) / um_px)) + 1
         n_ch = max(p.shape[2] for p in previews.values())
         dtype = next(iter(previews.values())).dtype
+        self._tiles = {}
+        self._placements = {}
         canvas = np.zeros((height, width, n_ch), dtype)
         for sid, (x0, y0, x1, y1) in boxes.items():
             c0, r0 = int(round(x0 / um_px)), int(round(y0 / um_px))
             cw, rh = max(1, int(round((x1 - x0) / um_px))), max(1, int(round((y1 - y0) / um_px)))
             small = cv2.resize(previews[sid], (cw, rh), interpolation=cv2.INTER_AREA)
             small = small.reshape(rh, cw, -1)
-            canvas[r0:r0 + rh, c0:c0 + cw, :small.shape[2]] = small
+            self._tiles[sid] = small
+            self._placements[sid] = (r0, c0, rh, cw)
+            levels = get_levels(self.project, small.shape[2], dtype, sid,
+                                key="overview_levels")
+            painted = remap_levels(small, levels)
+            canvas[r0:r0 + rh, c0:c0 + cw, :painted.shape[2]] = painted
         self._overview_image = canvas
         self.image_layers = add_channels(
             self.viewer, canvas, "slide",
@@ -155,6 +168,26 @@ class FolderView(SlideView):
         self.shapes.mode = "pan_zoom"
         return boxes
 
+    def _paint_section_tile(self, sid: int, levels: list[dict] | None = None) -> None:
+        """Rewrite one section's overview pixels from its equalized tile + levels."""
+        tile = getattr(self, "_tiles", {}).get(sid)
+        place = getattr(self, "_placements", {}).get(sid)
+        if tile is None or place is None or not getattr(self, "image_layers", None):
+            return
+        if levels is None:
+            levels = get_levels(self.project, tile.shape[2], tile.dtype, sid,
+                                key="overview_levels")
+        painted = remap_levels(tile, levels)
+        r0, c0, rh, cw = place
+        canvas = self._overview_image
+        canvas[r0:r0 + rh, c0:c0 + cw, :painted.shape[2]] = painted
+        # Refresh napari layers from the shared canvas (one layer per channel).
+        if len(self.image_layers) == 1:
+            self.image_layers[0].data = canvas[..., 0]
+        else:
+            for i, layer in enumerate(self.image_layers):
+                layer.data = canvas[..., i]
+
     def select(self, sid: int) -> None:
         """Highlight a section on the overview and in the list."""
         for row in range(self.list.count()):
@@ -171,12 +204,59 @@ class FolderView(SlideView):
         self.shapes.edge_width = [self._edge_um * (2.5 if s == sid else 1) for s in sids]
         name = self.project.get_slice(sid).get("name") if sid is not None else None
         if name:
-            self.viewer.status = (f"Selected {name}: double-click it or click "
-                                  "'Open selected section'.")
+            flipped = " (flipped)" if self.project.get_slice(sid).get("user_flipped") else ""
+            self.viewer.status = (f"Selected {name}{flipped}: brightness sliders below are for "
+                                  "this section; double-click / Open to align and count.")
+        self._bind_brightness(sid)
+
+    def _bind_brightness(self, sid: int | None) -> None:
+        """Point the existing brightness sliders at the selected section (or the whole slide)."""
+        host = getattr(self, "_brightness_host", None)
+        if host is None or not getattr(self, "image_layers", None):
+            return
+        if getattr(self, "_brightness_sid", object()) == sid and self.brightness_widget is not None:
+            return
+        if self.brightness_widget is not None:
+            self.brightness_widget.disconnect_layers()
+            self.brightness_widget.setParent(None)
+            self.brightness_widget.deleteLater()
+            self.brightness_widget = None
+        while host.count():
+            item = host.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+        self._brightness_sid = sid
+        if sid is not None and sid in getattr(self, "_tiles", {}):
+            tile = self._tiles[sid]
+            name = self.project.get_slice(sid).get("name") or f"slice {sid}"
+            levels = get_levels(self.project, tile.shape[2], tile.dtype, sid,
+                                key="overview_levels")
+            proxies = proxy_layers_for(self.image_layers, levels, tile.dtype)
+            self.brightness_widget = BrightnessWidget(
+                project=self.project, layers=proxies, image=tile, sid=sid,
+                slice_entry=self.project.get_slice(sid),
+                levels_key="overview_levels",
+                title=f"Brightness ({name})",
+                allow_separate=False,
+                custom_apply=lambda lv, s=sid: self._paint_section_tile(s, lv),
+                hint=("These sliders adjust only the selected section's equalized preview. "
+                      "Click empty space or clear the list selection for whole-slide brightness."))
+        else:
+            self.brightness_widget = BrightnessWidget(
+                project=self.project, layers=self.image_layers, image=self._overview_image,
+                levels_key="overview_levels", title="Brightness (all sections)",
+                allow_separate=False,
+                hint=("Select a section to make these sliders adjust that section's preview. "
+                      "With nothing selected they adjust the whole-slide display."))
+        host.addWidget(self.brightness_widget)
 
     def _on_list_selection(self, item, _previous=None) -> None:
         if item is not None and item.data(Qt.UserRole) is not None:
             self._highlight(item.data(Qt.UserRole))
+        else:
+            self._highlight(None)
 
     def _on_click(self, viewer, event):
         """Select the section under a click; dragging still pans the view."""
@@ -199,29 +279,6 @@ class FolderView(SlideView):
         folder = self.project.data["source"]
         exp = experiment_root(self.project)
         slides = sibling_slides(self.project)
-        help = (
-            f"Sections from {folder}, laid out by their column/row on the slide.\n"
-            "Click a section to select it; double-click it (or a list entry) to align it "
-            "and count cells.\n"
-            "Labels: name, 'A' = aligned, (n) = cells counted.\n"
-            "Overview brightness is equalized across sections (different laser settings "
-            "are matched), then adjusted with the panel below. Section brightness when "
-            "you open one is separate.\n"
-        )
-        if exp is not None and len(slides) > 1:
-            help += (
-                f"This slide is part of {exp.name}: use the slide menu to switch. "
-                "AP/pitch, region plots and brainrender use every slide in order "
-                "(after the last section of slide N comes the first of slide N+1).\n"
-            )
-        help += (
-            f"File names, channels and section order are set in {CONFIG_NAME} in that "
-            "folder; click 'Rescan folder' after editing it or adding images."
-        )
-        help_text = QLabel(help)
-        help_text.setWordWrap(True)
-        lay.addWidget(help_text)
-
         if exp is not None and len(slides) > 1:
             row = QHBoxLayout()
             row.addWidget(QLabel("Slide"))
@@ -237,14 +294,6 @@ class FolderView(SlideView):
             row.addWidget(self.slide_combo, 1)
             lay.addLayout(row)
 
-        if getattr(self, "image_layers", None):
-            self.brightness_widget = BrightnessWidget(
-                project=self.project, layers=self.image_layers, image=self._overview_image,
-                levels_key="overview_levels", title="Overview brightness",
-                allow_separate=False)
-            lay.addWidget(self.brightness_widget)
-        else:
-            self.brightness_widget = None
         rescan = QPushButton("Rescan folder")
         rescan.clicked.connect(self.app.show_slide)
         lay.addWidget(rescan)
@@ -254,6 +303,18 @@ class FolderView(SlideView):
         open_btn = QPushButton("Open selected section")
         open_btn.clicked.connect(self._on_open_selected)
         lay.addWidget(open_btn)
+        flip_btn = QPushButton("Flip selected section horizontally")
+        flip_btn.setToolTip("Mirror the selected section's image left-right. Use the "
+                            "checkbox below to choose what happens to an existing alignment.")
+        flip_btn.clicked.connect(self._on_flip_selected)
+        lay.addWidget(flip_btn)
+        self.mirror_alignment = QCheckBox("Also mirror the alignment (and cell atlas coords)")
+        self.mirror_alignment.setChecked(True)
+        self.mirror_alignment.setToolTip(
+            "On: the atlas outline stays on the same tissue after the flip.\n"
+            "Off: keep the current alignment as it is in the image; only the section "
+            "image (and cell marks) flip.")
+        lay.addWidget(self.mirror_alignment)
         for text, slot in [("Plot AP && pitch (all slides)", self._on_plot),
                            ("Plot cells by region (all slides)", self._on_regions_plot),
                            ("Export all cells (CSV)", self._on_export),
@@ -261,6 +322,37 @@ class FolderView(SlideView):
             b = QPushButton(text)
             b.clicked.connect(slot)
             lay.addWidget(b)
+        self._brightness_host = QVBoxLayout()
+        lay.addLayout(self._brightness_host)
+        self.brightness_widget = None
+        self._brightness_sid = object()  # force first bind
+        if getattr(self, "image_layers", None):
+            self._bind_brightness(None)
+        help = (
+            f"Sections from {folder}, laid out by their column/row on the slide.\n"
+            "Click a section to select it; double-click it (or a list entry) to align it "
+            "and count cells.\n"
+            "Labels: name, 'F' = flipped, 'A' = aligned, (n) = cells counted.\n"
+            "Sections are equalized first; select one and the brightness sliders above "
+            "adjust that section's preview (with nothing selected they adjust the whole "
+            "slide). Opening a section still has its own brightness.\n"
+            "Flip horizontally mirrors the selected section in slide and slice views; "
+            "flips are listed in slicereg_experiment.json (or project.json). The checkbox "
+            "chooses whether an existing atlas alignment is mirrored too.\n"
+        )
+        if exp is not None and len(slides) > 1:
+            help += (
+                f"This slide is part of {exp.name}: use the slide menu to switch. "
+                "Cell types, AP/pitch, region plots and brainrender are shared across "
+                "every slide (after the last section of slide N comes the first of N+1).\n"
+            )
+        help += (
+            f"File names, channels and section order are set in {CONFIG_NAME} in that "
+            "folder; click 'Rescan folder' after editing it or adding images."
+        )
+        help_text = QLabel(help)
+        help_text.setWordWrap(True)
+        lay.addWidget(help_text)
         self.app.add_dock(w, "Slide")
 
     def _on_slide_changed(self, index: int) -> None:
@@ -326,6 +418,44 @@ class FolderView(SlideView):
             return
         QMessageBox.information(None, "Nothing selected",
                                 "Pick a section in the list first, or double-click a section.")
+
+    def _selected_sid(self) -> int | None:
+        item = self.list.currentItem()
+        if item is not None and item.data(Qt.UserRole) is not None:
+            return int(item.data(Qt.UserRole))
+        return None
+
+    def _on_flip_selected(self) -> None:
+        sid = self._selected_sid()
+        if sid is None:
+            QMessageBox.information(None, "Nothing selected",
+                                    "Click a section on the overview or in the list first.")
+            return
+        if not self.project.status(sid)["cropped"]:
+            QMessageBox.warning(None, "Not imported",
+                                "Import this section before flipping it.")
+            return
+        name = self.project.get_slice(sid).get("name") or f"slice {sid}"
+        mirror_al = self.mirror_alignment.isChecked()
+        has_al = self.project.status(sid)["aligned"]
+        if has_al and not mirror_al:
+            ok = QMessageBox.question(
+                None, "Keep alignment?",
+                f"Flip {name} but leave its atlas alignment where it is?\n\n"
+                "The outline will no longer match the tissue until you re-align.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if ok != QMessageBox.Yes:
+                return
+        self.project.flip_section_horizontal(sid, mirror_alignment=mirror_al)
+        self.viewer.status = (f"Flipped {name}"
+                              + (" (alignment mirrored)." if mirror_al and has_al
+                                 else " (alignment kept)." if has_al else "."))
+        # Rebuild the overview so the flipped preview shows.
+        self.app.show_slide()
+        # Reselect after rebuild.
+        QApplication.processEvents()
+        if isinstance(self.app.view, FolderView):
+            self.app.view.select(sid)
 
     def _on_plot(self) -> None:
         from .positions_plot import PositionsPlot

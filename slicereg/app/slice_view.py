@@ -11,8 +11,8 @@ from napari.layers.points._points_constants import Mode as PointsMode
 from napari.layers.points._points_mouse_bindings import add as add_point_on_click
 from napari.utils.colormaps import DirectLabelColormap
 from qtpy.QtCore import QProcess, QTimer
-from qtpy.QtWidgets import (QHBoxLayout, QLabel, QMessageBox, QPushButton, QTabWidget,
-                            QVBoxLayout, QWidget)
+from qtpy.QtWidgets import (QGroupBox, QHBoxLayout, QLabel, QMessageBox, QPushButton,
+                            QTabWidget, QTextEdit, QVBoxLayout, QWidget)
 
 from ..atlas import boundaries, label_bbox
 from ..export import map_cells
@@ -169,6 +169,9 @@ class SliceView:
             self.brightness_widget.disconnect_layers()
         self._timer.stop()
         self._smooth_timer.stop()
+        if getattr(self, "_notes_timer", None) is not None and self._notes_timer.isActive():
+            self._notes_timer.stop()
+            self._save_notes()
         if self._deepslice_running:
             self._deepslice.kill()
         if self._on_mouse_move in self.viewer.mouse_move_callbacks:
@@ -208,6 +211,21 @@ class SliceView:
         self.brightness_widget = BrightnessWidget(self)
         lay.addWidget(self.brightness_widget)
 
+        notes_box = QGroupBox("Notes")
+        notes_lay = QVBoxLayout(notes_box)
+        self.notes = QTextEdit()
+        self.notes.setPlaceholderText("Notes for this section (saved automatically)...")
+        self.notes.setAcceptRichText(False)
+        self.notes.setMinimumHeight(90)
+        self.notes.setPlainText(self.project.load_notes(self.sid))
+        self._notes_timer = QTimer()
+        self._notes_timer.setSingleShot(True)
+        self._notes_timer.setInterval(400)
+        self._notes_timer.timeout.connect(self._save_notes)
+        self.notes.textChanged.connect(self._notes_timer.start)
+        notes_lay.addWidget(self.notes)
+        lay.addWidget(notes_box)
+
         self.tabs = QTabWidget()
         self.align_widget = AlignWidget(self)
         self.cells_widget = CellsWidget(self)
@@ -220,6 +238,9 @@ class SliceView:
         self.cells_widget.set_types(list(self.cell_layers), self._current_type)
         self._update_counts()
         self.app.add_dock(w, f"Slice {self.sid:02d}")
+
+    def _save_notes(self) -> None:
+        self.project.save_notes(self.sid, self.notes.toPlainText())
 
     # ------------------------------------------------------------ alignment
     def alignment_changed(self) -> None:
@@ -514,8 +535,7 @@ class SliceView:
         # orphan names already present on this section's CSV.
         types = list(dict.fromkeys(self.project.cell_types() + from_slice))
         if types != list(self.project.data.get("cell_types") or []):
-            self.project.data["cell_types"] = types
-            self.project.save()
+            self.project.set_cell_types(types)
         for name in types:
             sub = None if df is None else df[df["cell_type"].astype(str) == name]
             yx = (np.empty((0, 2)) if sub is None or not len(sub)

@@ -114,3 +114,51 @@ def test_section_positions_in_slide_order(tmp_path, atlas):
     names, sids, ap, pitch = section_positions(project)
     assert names == ["c1_r1", "c1_r2"] and sids == [1, 2]
     assert np.isnan(ap[0]) and ap[1] == 7000.0 and pitch[1] == 2.0
+
+
+def test_flip_section_mirrors_alignment_or_keeps_it(tmp_path, atlas):
+    _, project = _project(tmp_path)
+    before = _align(atlas, project, 1)
+    img_before = project.load_image(1)
+    cells_before = project.load_cells(1)
+    w = project.get_slice(1)["size"][0]
+
+    project.flip_section_horizontal(1, mirror_alignment=True)
+    assert np.array_equal(project.load_image(1), img_before[:, ::-1])
+    assert project.get_slice(1).get("user_flipped") is True
+    assert project.get_slice(1).get("mirrored") is True
+    after = project.load_alignment(1)
+    assert np.isclose(after["rotation_deg"], -before.rotation_deg)
+    assert after["flip"] is (not before.flip)
+    assert np.allclose(project.load_cells(1)["x_px"], w - 1 - cells_before["x_px"])
+    # Rescan / apply_hemispheres must not undo a manual flip.
+    assert project.apply_hemispheres(atlas) == []
+    assert np.array_equal(project.load_image(1), img_before[:, ::-1])
+
+    # Flip again but keep the alignment: image flips back, alignment stays mirrored.
+    al_kept = dict(project.load_alignment(1))
+    project.flip_section_horizontal(1, mirror_alignment=False)
+    assert np.array_equal(project.load_image(1), img_before)
+    assert project.get_slice(1).get("user_flipped") is False
+    kept = project.load_alignment(1)
+    assert kept["flip"] is al_kept["flip"] and np.isclose(kept["tx"], al_kept["tx"])
+    assert np.allclose(project.load_cells(1)["x_px"], cells_before["x_px"])
+
+
+def test_user_flip_stacks_with_hemispheres_mirror(tmp_path, atlas):
+    folder, project = _project(tmp_path)
+    img0 = project.load_image(1)
+    (folder / "hemispheres.csv").write_text("slice,x1,x2\nc1_r1,L,R\nc1_r2,R,L\n")
+    project.sync_folder()
+    assert 1 in project.apply_hemispheres(atlas)
+    mirrored = project.load_image(1)
+    assert np.array_equal(mirrored, img0[:, ::-1])
+    assert project.get_slice(1).get("mirror") is True
+
+    project.flip_section_horizontal(1, mirror_alignment=True)
+    assert project.get_slice(1).get("user_flipped") is True
+    # mirror XOR user_flipped => not mirrored on disk
+    assert project.get_slice(1).get("mirrored") is False
+    assert np.array_equal(project.load_image(1), img0)
+    assert project.apply_hemispheres(atlas) == []
+    assert np.array_equal(project.load_image(1), img0)

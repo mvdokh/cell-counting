@@ -95,12 +95,16 @@ their names mean:
 
 The slide view then shows every section at true size in its column/row, cropped to
 its tissue. Each section is equalized per channel first (so different laser settings
-look about the same), and the *Overview brightness* panel adjusts the shared display.
-Click a section to select it (its box turns cyan) and double-click it, or use *Open
-selected section*, to align and count it exactly as above. Z-stacks are max-projected,
-and mosaics that were saved as separate tiles are stitched from the tile positions in
-the file. Click *Rescan folder* after editing the config or adding images; existing
-sections keep their alignments and cells.
+look about the same). The brightness sliders adjust the whole slide until you select a
+section (box turns cyan); then the same sliders adjust only that section's preview.
+Double-click a section, or use *Open selected section*, to align and count it. *Flip
+selected section horizontally* mirrors it in the slide and slice views (optional: also
+mirror the atlas alignment). Manual flips are listed in `slicereg_experiment.json`
+under `"flipped"` (e.g. `"7/c5_r2"`) for an experiment, or in `project.json` for a lone
+slide — Rescan keeps them. Z-stacks are max-projected, and mosaics that were saved as
+separate tiles are stitched from the tile positions in the file. Click *Rescan folder*
+after editing the config or adding images; existing sections keep their alignments and
+cells.
 
 ### Several slides in one experiment
 
@@ -313,6 +317,7 @@ slide_project/
     mask.png            # tissue mask
     alignment.json      # atlas alignment
     cells.csv           # counted cells
+    notes.txt           # optional per-section notes from slice view
   cells_all.csv         # after export
   region_counts.csv     # after export
   top_regions.csv       # after export

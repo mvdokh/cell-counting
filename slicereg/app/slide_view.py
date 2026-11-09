@@ -130,7 +130,10 @@ class SlideView:
 
     def _short_label(self, sid: int) -> str:
         st = self.project.status(sid)
-        label = self.project.get_slice(sid).get("name") or f"{sid:02d}"
+        s = self.project.get_slice(sid)
+        label = s.get("name") or f"{sid:02d}"
+        if s.get("user_flipped"):
+            label += " F"
         if st["aligned"]:
             label += " A"
         if st["counted"]:

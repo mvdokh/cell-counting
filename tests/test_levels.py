@@ -1,6 +1,7 @@
 import numpy as np
 
-from slicereg.app.layers import equalize_channels, full_range, get_levels, store_levels
+from slicereg.app.layers import (equalize_channels, full_range, get_levels, remap_levels,
+                                 store_levels)
 
 
 class _Project:
@@ -39,6 +40,22 @@ def test_overview_levels_are_independent_of_section_levels():
     store_levels(p, [{"min": 10, "max": 200, "gamma": 0.9}] * 2, key="overview_levels")
     assert get_levels(p, 2, np.uint8)[0]["max"] == 50.0
     assert get_levels(p, 2, np.uint8, key="overview_levels")[0]["max"] == 200.0
+    # Per-section overview preview levels do not inherit the shared overview contrast.
+    assert get_levels(p, 2, np.uint8, sid=1, key="overview_levels")[0]["max"] == 255.0
+    store_levels(p, [{"min": 0, "max": 80, "gamma": 1}] * 2, sid=1, key="overview_levels")
+    assert get_levels(p, 2, np.uint8, sid=1, key="overview_levels")[0]["max"] == 80.0
+    assert get_levels(p, 2, np.uint8, key="overview_levels")[0]["max"] == 200.0
+
+
+def test_remap_levels_applies_range_and_gamma():
+    img = np.zeros((4, 4, 1), np.uint8)
+    img[:] = 128
+    out = remap_levels(img, [{"min": 0, "max": 255, "gamma": 1.0}])
+    assert out[0, 0, 0] == 128
+    dark = remap_levels(img, [{"min": 0, "max": 128, "gamma": 1.0}])
+    assert dark[0, 0, 0] == 255
+    brightened = remap_levels(img, [{"min": 0, "max": 255, "gamma": 0.5}])
+    assert brightened[0, 0, 0] > 128
 
 
 def test_equalize_channels_matches_dim_and_bright_sections():

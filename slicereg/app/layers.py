@@ -49,16 +49,19 @@ def get_levels(project, n_channels: int, dtype, sid: int | None = None,
                key: str = "levels") -> list[dict]:
     """Brightness levels ``{"min", "max", "gamma"}`` per channel, set by the user.
 
-    A section's own levels (if it has any and ``key`` is ``"levels"``) win over the
-    project's shared levels for that key; without either, each channel shows the
-    dtype's full range unchanged. Use ``key="overview_levels"`` for the slide
-    overview, which is independent of the section view."""
+    A section's own levels (stored under ``key`` on the slice) win when ``sid`` is
+    set; for section view (``key="levels"``) that falls back to the project's shared
+    levels. Overview per-section preview levels (``key="overview_levels"`` with a
+    ``sid``) fall back to the dtype full range, not the shared overview contrast.
+    Without either, each channel shows the dtype's full range unchanged."""
     lo, hi = full_range(dtype)
     out = [{"min": lo, "max": hi, "gamma": 1.0} for _ in range(n_channels)]
     saved = None
-    if sid is not None and key == "levels":
-        saved = project.get_slice(sid).get("levels")
-    if saved is None:
+    if sid is not None:
+        saved = project.get_slice(sid).get(key)
+        if saved is None and key == "levels":
+            saved = project.data.get(key)
+    else:
         saved = project.data.get(key)
     for level, s in zip(out, saved or []):
         level.update({k: float(s[k]) for k in ("min", "max", "gamma") if k in s})
@@ -67,13 +70,37 @@ def get_levels(project, n_channels: int, dtype, sid: int | None = None,
 
 def store_levels(project, levels: list[dict], sid: int | None = None,
                  key: str = "levels") -> None:
-    """Save levels under ``key`` on the project, or as one section's own levels."""
+    """Save levels under ``key`` on the project, or on one section when ``sid`` is set."""
     clean = [{k: round(float(lv[k]), 4) for k in ("min", "max", "gamma")} for lv in levels]
     if sid is None:
         project.data[key] = clean
     else:
-        project.get_slice(sid)["levels"] = clean
+        project.get_slice(sid)[key] = clean
     project.save()
+
+
+def remap_levels(img: np.ndarray, levels: list[dict]) -> np.ndarray:
+    """Bake per-channel min/max/gamma into pixel values (dtype full range out).
+
+    Used for per-section overview preview brightness on a shared canvas layer."""
+    img = np.asarray(img)
+    out = np.zeros_like(img, dtype=np.float32)
+    lo_out, hi_out = full_range(img.dtype)
+    n_ch = img.shape[2] if img.ndim == 3 else 1
+    for c in range(n_ch):
+        channel = img[..., c] if img.ndim == 3 else img
+        lv = levels[c] if c < len(levels) else {"min": lo_out, "max": hi_out, "gamma": 1.0}
+        lo, hi = float(lv["min"]), float(lv["max"])
+        gamma = float(lv.get("gamma", 1.0))
+        if hi <= lo:
+            hi = lo + (1.0 if np.issubdtype(img.dtype, np.integer) else 1e-3)
+        t = np.clip((channel.astype(np.float32) - lo) / (hi - lo), 0.0, 1.0) ** gamma
+        mapped = t * (hi_out - lo_out) + lo_out
+        if img.ndim == 3:
+            out[..., c] = mapped
+        else:
+            out = mapped
+    return np.ascontiguousarray(out.astype(img.dtype, copy=False))
 
 
 def equalize_channels(img: np.ndarray, mask: np.ndarray | None = None,

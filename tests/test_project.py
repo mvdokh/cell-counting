@@ -100,3 +100,13 @@ def test_cell_types_are_shared_across_the_project(project):
     assert project.cell_types() == ["cell", "green", "red"]
     reloaded = Project.load(project.root)
     assert reloaded.cell_types() == ["cell", "green", "red"]
+
+
+def test_section_notes_persist_and_clear(project):
+    assert project.load_notes(1) == ""
+    project.save_notes(1, "check medial edge\n")
+    assert project.load_notes(1).startswith("check medial edge")
+    assert (project.slice_dir(1) / "notes.txt").is_file()
+    project.save_notes(1, "")
+    assert project.load_notes(1) == ""
+    assert not (project.slice_dir(1) / "notes.txt").exists()

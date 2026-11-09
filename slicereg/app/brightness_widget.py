@@ -133,10 +133,15 @@ class _ChannelRow:
             return
         lo, hi = (float(v) for v in value)
         apply_levels([self.layer], [{"min": lo, "max": hi, "gamma": self.layer.gamma}])
+        if isinstance(self.layer, _LevelsProxy):
+            self.update_from_layer()
 
     def _on_gamma(self, value: float) -> None:
-        if not self.widget.syncing:
-            self.layer.gamma = float(value)
+        if self.widget.syncing:
+            return
+        self.layer.gamma = float(value)
+        if isinstance(self.layer, _LevelsProxy):
+            self.update_from_layer()
 
     def _on_layer_visible(self, _event=None) -> None:
         self.show.blockSignals(True)
@@ -163,11 +168,35 @@ class _ChannelRow:
         self.widget.changed()
 
 
+class _LevelsProxy:
+    """Minimal napari Image stand-in so BrightnessWidget can drive a custom apply."""
+
+    def __init__(self, name, colormap, dtype, level: dict):
+        from napari.utils.events import EmitterGroup
+
+        self.name = name
+        self.colormap = colormap
+        lo, hi = float(level["min"]), float(level["max"])
+        self.contrast_limits = (lo, hi)
+        self.contrast_limits_range = full_range(dtype)
+        self.gamma = float(level.get("gamma", 1.0))
+        self.visible = True
+        self.data = np.zeros((2, 2), dtype)
+        self.events = EmitterGroup(source=self, contrast_limits=None, gamma=None, visible=None)
+
+
+def proxy_layers_for(layers, levels, dtype) -> list:
+    """Build proxy layers matching ``layers`` names/colormaps with the given levels."""
+    return [_LevelsProxy(layer.name, layer.colormap, dtype, lv)
+            for layer, lv in zip(layers, levels)]
+
+
 class BrightnessWidget(QGroupBox):
     def __init__(self, view=None, *, project=None, layers=None, image=None,
                  sid: int | None = None, slice_entry: dict | None = None,
                  levels_key: str = "levels", title: str = "Brightness",
-                 allow_separate: bool | None = None):
+                 allow_separate: bool | None = None, custom_apply=None,
+                 hint: str | None = None):
         super().__init__(title)
         if view is not None:
             project = view.project
@@ -178,7 +207,7 @@ class BrightnessWidget(QGroupBox):
             if allow_separate is None:
                 allow_separate = True
         if allow_separate is None:
-            allow_separate = sid is not None and levels_key == "levels"
+            allow_separate = sid is not None and levels_key == "levels" and custom_apply is None
         self.view = view
         self.project = project
         self.sid = sid
@@ -186,6 +215,7 @@ class BrightnessWidget(QGroupBox):
         self.layers = list(layers)
         self.levels_key = levels_key
         self.allow_separate = allow_separate
+        self.custom_apply = custom_apply
         dtype = image.dtype
         self.is_int = bool(np.issubdtype(dtype, np.integer))
         self.range = full_range(dtype)
@@ -216,13 +246,20 @@ class BrightnessWidget(QGroupBox):
             (sample[..., i] if sample.ndim == 3 else sample)[tissue] for i in range(n_ch)]
 
         lay = QVBoxLayout(self)
-        if levels_key == "overview_levels":
-            hint = QLabel("Each section is equalized first so different laser settings "
-                          "look similar; these controls adjust the overview display.")
+        if hint is not None:
+            hint_text = hint
+        elif levels_key == "overview_levels" and custom_apply is not None:
+            hint_text = ("Adjust this section's equalized preview on the overview. "
+                         "Other sections are unchanged; Overview brightness below still "
+                         "applies to the whole slide.")
+        elif levels_key == "overview_levels":
+            hint_text = ("Each section is equalized first so different laser settings "
+                         "look similar; these controls adjust the overview display.")
         else:
-            hint = QLabel("Levels are only changed by you; they are saved with the project.")
-        hint.setWordWrap(True)
-        lay.addWidget(hint)
+            hint_text = "Levels are only changed by you; they are saved with the project."
+        hint_label = QLabel(hint_text)
+        hint_label.setWordWrap(True)
+        lay.addWidget(hint_label)
         self.rows = []
         for i, layer in enumerate(self.layers):
             row = _ChannelRow(self, layer, self._tissue_values[min(i, len(self._tissue_values) - 1)])
@@ -254,13 +291,24 @@ class BrightnessWidget(QGroupBox):
 
     def changed(self) -> None:
         if self._ready and not self.syncing:
+            if self.custom_apply is not None:
+                self.custom_apply(layer_levels(self.layers))
             self._save_timer.start()
 
+    def _apply(self, levels: list[dict]) -> None:
+        apply_levels(self.layers, levels)
+        if self.custom_apply is not None:
+            self.custom_apply(layer_levels(self.layers))
+
     def _save(self) -> None:
+        levels = layer_levels(self.layers)
+        if self.custom_apply is not None:
+            store_levels(self.project, levels, self.sid, key=self.levels_key)
+            return
         sid = None
         if self.allow_separate and self.separate is not None and self.separate.isChecked():
             sid = self.sid
-        store_levels(self.project, layer_levels(self.layers), sid, key=self.levels_key)
+        store_levels(self.project, levels, sid, key=self.levels_key)
 
     def auto(self) -> None:
         clip = float(self.clip.value())
@@ -268,11 +316,11 @@ class BrightnessWidget(QGroupBox):
         for layer, values in zip(self.layers, self._tissue_values):
             lo, hi = np.percentile(values, [clip, 100 - clip]) if values.size else self.range
             levels.append({"min": float(lo), "max": float(hi), "gamma": float(layer.gamma)})
-        apply_levels(self.layers, levels)
+        self._apply(levels)
 
     def full_range(self) -> None:
         lo, hi = self.range
-        apply_levels(self.layers, [{"min": lo, "max": hi, "gamma": 1.0}] * len(self.layers))
+        self._apply([{"min": lo, "max": hi, "gamma": 1.0}] * len(self.layers))
 
     def _on_separate(self, on: bool) -> None:
         if on:
