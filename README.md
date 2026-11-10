@@ -94,9 +94,9 @@ their names mean:
 | `atlas`, `section_spacing_um` | `allen_mouse_25um`, 80 | Used when the project is created |
 
 The slide view then shows every section at true size in its column/row, cropped to
-its tissue. Each section is equalized per channel first (so different laser settings
-look about the same). The brightness sliders adjust the whole slide until you select a
-section (box turns cyan); then the same sliders adjust only that section's preview.
+its tissue, at the preview's native brightness. The brightness sliders adjust the whole
+slide until you select a section (box turns cyan); then the same sliders adjust only
+that section's preview.
 Double-click a section, or use *Open selected section*, to align and count it. *Flip
 selected section horizontally* mirrors it in the slide and slice views (optional: also
 mirror the atlas alignment). Manual flips are listed in `slicereg_experiment.json`
@@ -122,8 +122,8 @@ siblings. Section order for plots and 3D runs through the slides in numeric orde
 then by the folder config's column/row order within a slide — so after the last
 section of slide 7 (e.g. `c5_r3`) comes the first of slide 8 (`c1_r1`).
 
-- **Plot AP & pitch (all slides)** and **Plot cells by region (all slides)** use
-  every slide's alignments and cells.
+- **Plot AP & pitch (all slides)**, **Plot cells by region (all slides)** and
+  **Plot cells by hemisphere (all slides)** use every slide's alignments and cells.
 - **3D view in brainrender (all slides)** draws cells and section images from the
   whole experiment (title = the experiment folder name). Use `--this-slide` on the
   command line to render only the current project.

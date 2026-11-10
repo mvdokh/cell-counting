@@ -97,6 +97,7 @@ def top_regions(cells: pd.DataFrame) -> pd.DataFrame:
 def save_region_bar_plot(top: pd.DataFrame, path) -> None:
     """Bar plot of cells per region, in ``top_regions`` order."""
     from matplotlib.figure import Figure
+    from matplotlib.ticker import MaxNLocator
 
     fig = Figure(figsize=(max(4.0, 0.45 * len(top) + 1.5), 4.0), layout="constrained")
     ax = fig.subplots()
@@ -108,6 +109,7 @@ def save_region_bar_plot(top: pd.DataFrame, path) -> None:
         label.set_horizontalalignment("right")
     ax.spines[["top", "right"]].set_visible(False)
     ax.margins(x=0.01)
+    ax.yaxis.set_major_locator(MaxNLocator(integer=True, min_n_ticks=2))
     fig.savefig(path, dpi=300)
 
 
@@ -118,6 +120,7 @@ def save_hemisphere_bar_plot(cells: pd.DataFrame, top: pd.DataFrame, path) -> No
     """Cells per hemisphere: totals, then each region split by side in ``top_regions``
     order."""
     from matplotlib.figure import Figure
+    from matplotlib.ticker import MaxNLocator
 
     sides = list(HEMISPHERE_COLORS)
     totals = cells["hemisphere"].value_counts().reindex(sides, fill_value=0)
@@ -127,7 +130,7 @@ def save_hemisphere_bar_plot(cells: pd.DataFrame, top: pd.DataFrame, path) -> No
 
     ax_total.bar(sides, totals.values, color=[HEMISPHERE_COLORS[s] for s in sides])
     for x, n in enumerate(totals.values):
-        ax_total.annotate(str(n), (x, n), ha="center", va="bottom",
+        ax_total.annotate(str(int(n)), (x, n), ha="center", va="bottom",
                           xytext=(0, 2), textcoords="offset points", fontsize=8)
     ax_total.set_ylabel("Cells")
     ax_total.set_xlabel("Hemisphere")
@@ -145,6 +148,7 @@ def save_hemisphere_bar_plot(cells: pd.DataFrame, top: pd.DataFrame, path) -> No
     ax_region.margins(x=0.01)
     for ax in (ax_total, ax_region):
         ax.spines[["top", "right"]].set_visible(False)
+        ax.yaxis.set_major_locator(MaxNLocator(integer=True, min_n_ticks=2))
     fig.savefig(path, dpi=300)
 
 

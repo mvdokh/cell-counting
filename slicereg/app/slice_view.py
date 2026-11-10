@@ -50,6 +50,8 @@ class SliceView:
         self.landmark_mode = False
         self.cell_layers: dict[str, object] = {}
         self._display = {**DISPLAY_DEFAULTS, **self.project.data.get("display", {})}
+        # Always start with atlas outlines off when opening a section from the slide.
+        self._display["outlines"] = False
         self._default_cell_size = max(15.0, self.image.shape[1] / 150)
         self._cell_size = float(self._display.get("cell_size") or self._default_cell_size)
         self._side_dx = self.image.shape[1] * 1.05

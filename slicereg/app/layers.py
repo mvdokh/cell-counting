@@ -8,7 +8,7 @@ from napari.utils.colormaps import Colormap
 from ..export import CELL_COLORS  # noqa: F401
 
 DISPLAY_DEFAULTS = {
-    "outlines": True,
+    "outlines": False,
     "regions": False,
     "smooth": True,
     "sigma": 1.0,

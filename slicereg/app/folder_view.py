@@ -14,7 +14,7 @@ from ..experiment import (collect_experiment_cells, experiment_cell_types, exper
                           sync_experiment_cell_types, sync_experiment_flips)
 from ..folder import CONFIG_NAME, grid_layout
 from .brightness_widget import BrightnessWidget, proxy_layers_for, save_levels_on_change
-from .layers import add_channels, equalize_channels, get_levels, remap_levels
+from .layers import add_channels, get_levels, remap_levels
 from .slide_view import SlideView, _rect
 
 GAP_UM = 600.0
@@ -22,11 +22,10 @@ OVERVIEW_PX = 500  # overview width of the largest section, in screen-independen
 
 
 def _overview_tile(preview: np.ndarray, mask: np.ndarray, pad: float = 0.03) -> np.ndarray:
-    """The section's tissue only, cropped to it and equalized per channel.
+    """The section's tissue only, cropped to it, at the preview's native values.
 
-    Equalization maps each channel's tissue percentiles to the full dtype range so
-    sections imaged with different laser settings look about the same; the overview
-    brightness panel then adjusts the shared display."""
+    Brightness is not normalized across sections; select a section and use the
+    brightness sliders to adjust that tile's display range."""
     if mask.shape != preview.shape[:2] or not mask.any():
         mask = np.ones(preview.shape[:2], bool)
     out = preview.copy()
@@ -35,8 +34,7 @@ def _overview_tile(preview: np.ndarray, mask: np.ndarray, pad: float = 0.03) -> 
     p = int(pad * max(np.ptp(xs), np.ptp(ys)))
     y0, y1 = max(0, ys.min() - p), min(mask.shape[0], ys.max() + 1 + p)
     x0, x1 = max(0, xs.min() - p), min(mask.shape[1], xs.max() + 1 + p)
-    tile = out[y0:y1, x0:x1]
-    return equalize_channels(tile, mask[y0:y1, x0:x1])
+    return out[y0:y1, x0:x1]
 
 
 class FolderView(SlideView):
@@ -169,7 +167,7 @@ class FolderView(SlideView):
         return boxes
 
     def _paint_section_tile(self, sid: int, levels: list[dict] | None = None) -> None:
-        """Rewrite one section's overview pixels from its equalized tile + levels."""
+        """Rewrite one section's overview pixels from its tile + display levels."""
         tile = getattr(self, "_tiles", {}).get(sid)
         place = getattr(self, "_placements", {}).get(sid)
         if tile is None or place is None or not getattr(self, "image_layers", None):
@@ -241,7 +239,7 @@ class FolderView(SlideView):
                 title=f"Brightness ({name})",
                 allow_separate=False,
                 custom_apply=lambda lv, s=sid: self._paint_section_tile(s, lv),
-                hint=("These sliders adjust only the selected section's equalized preview. "
+                hint=("These sliders adjust only the selected section's preview. "
                       "Click empty space or clear the list selection for whole-slide brightness."))
         else:
             self.brightness_widget = BrightnessWidget(
@@ -316,7 +314,10 @@ class FolderView(SlideView):
             "image (and cell marks) flip.")
         lay.addWidget(self.mirror_alignment)
         for text, slot in [("Plot AP && pitch (all slides)", self._on_plot),
-                           ("Plot cells by region (all slides)", self._on_regions_plot),
+                           ("Plot cells by region (all slides)",
+                            lambda: self._on_regions_plot("region")),
+                           ("Plot cells by hemisphere (all slides)",
+                            lambda: self._on_regions_plot("hemisphere")),
                            ("Export all cells (CSV)", self._on_export),
                            ("3D view in brainrender (all slides)", self._on_render)]:
             b = QPushButton(text)
@@ -333,9 +334,9 @@ class FolderView(SlideView):
             "Click a section to select it; double-click it (or a list entry) to align it "
             "and count cells.\n"
             "Labels: name, 'F' = flipped, 'A' = aligned, (n) = cells counted.\n"
-            "Sections are equalized first; select one and the brightness sliders above "
-            "adjust that section's preview (with nothing selected they adjust the whole "
-            "slide). Opening a section still has its own brightness.\n"
+            "Select a section and the brightness sliders above adjust that section's "
+            "preview (with nothing selected they adjust the whole slide). Opening a "
+            "section still has its own brightness.\n"
             "Flip horizontally mirrors the selected section in slide and slice views; "
             "flips are listed in slicereg_experiment.json (or project.json). The checkbox "
             "chooses whether an existing atlas alignment is mirrored too.\n"
@@ -465,7 +466,7 @@ class FolderView(SlideView):
             parent=getattr(self.viewer.window, "_qt_window", None),
             open_experiment_section=self.app.open_experiment_section).exec()
 
-    def _on_regions_plot(self) -> None:
+    def _on_regions_plot(self, kind: str = "region") -> None:
         from .regions_plot import RegionsPlot
 
         cells = collect_experiment_cells(self.project)
@@ -475,10 +476,13 @@ class FolderView(SlideView):
             return
         # Drop the slide column for ranking helpers that expect CELL_COLUMNS.
         plot_cells = cells.drop(columns=["slide"], errors="ignore")
-        title = "Cells by region"
+        if kind == "hemisphere":
+            title = "Cells by region and hemisphere"
+        else:
+            title = "Cells by region"
         if experiment_root(self.project) is not None:
             title += " (all slides)"
-        RegionsPlot(plot_cells, title=title,
+        RegionsPlot(plot_cells, title=title, kind=kind,
                     parent=getattr(self.viewer.window, "_qt_window", None),
                     save_dir=self.project.root).exec()
 

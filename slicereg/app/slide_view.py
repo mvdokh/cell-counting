@@ -107,7 +107,10 @@ class SlideView:
         open_btn.clicked.connect(self._on_open_selected)
         lay.addWidget(open_btn)
         for text, slot in [("Plot AP && pitch per section", self._on_plot),
-                           ("Plot cells by region", self._on_regions_plot),
+                           ("Plot cells by region",
+                            lambda: self._on_regions_plot("region")),
+                           ("Plot cells by hemisphere",
+                            lambda: self._on_regions_plot("hemisphere")),
                            ("Export all cells (CSV)", self._on_export),
                            ("3D view in brainrender", self._on_render)]:
             b = QPushButton(text)
@@ -259,7 +262,7 @@ class SlideView:
         PositionsPlot(self.project, self._open,
                       parent=getattr(self.viewer.window, "_qt_window", None)).exec()
 
-    def _on_regions_plot(self) -> None:
+    def _on_regions_plot(self, kind: str = "region") -> None:
         from .regions_plot import RegionsPlot
 
         cells = collect_cells(self.project)
@@ -267,7 +270,8 @@ class SlideView:
             QMessageBox.information(None, "No cells",
                                     "Count cells on at least one section first.")
             return
-        RegionsPlot(cells, parent=getattr(self.viewer.window, "_qt_window", None),
+        RegionsPlot(cells, kind=kind,
+                    parent=getattr(self.viewer.window, "_qt_window", None),
                     save_dir=self.project.root).exec()
 
     def _on_render(self) -> None:

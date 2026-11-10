@@ -1,8 +1,7 @@
 """Brightness levels for section and slide-overview images.
 
 Section levels are shared across sections unless one has its own. Overview levels
-(``overview_levels``) are separate: the overview equalizes each section first, then
-these controls fine-tune the display.
+(``overview_levels``) are separate and adjust the slide-view preview display.
 """
 
 from __future__ import annotations
@@ -249,12 +248,10 @@ class BrightnessWidget(QGroupBox):
         if hint is not None:
             hint_text = hint
         elif levels_key == "overview_levels" and custom_apply is not None:
-            hint_text = ("Adjust this section's equalized preview on the overview. "
-                         "Other sections are unchanged; Overview brightness below still "
-                         "applies to the whole slide.")
+            hint_text = ("Adjust this section's preview on the overview. Other sections "
+                         "are unchanged.")
         elif levels_key == "overview_levels":
-            hint_text = ("Each section is equalized first so different laser settings "
-                         "look similar; these controls adjust the overview display.")
+            hint_text = "These controls adjust the overview display."
         else:
             hint_text = "Levels are only changed by you; they are saved with the project."
         hint_label = QLabel(hint_text)
