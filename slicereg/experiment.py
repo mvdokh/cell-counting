@@ -80,6 +80,48 @@ def sibling_slides(project: Project) -> list[dict]:
     return list_slides(root, usable_only=True)
 
 
+def _first_mip(folder: Path) -> Path | None:
+    for p in sorted(Path(folder).iterdir()):
+        if p.is_file() and _CNR_MIP.match(p.name):
+            return p
+    return None
+
+
+def _mip_channel_count(folder: Path) -> int | None:
+    """Channel count from the first ``cNrN_mip.lsm`` in ``folder``, or None."""
+    import tifffile
+
+    p = _first_mip(folder)
+    if p is None:
+        return None
+    with tifffile.TiffFile(str(p)) as tif:
+        shape = tif.series[0].shape
+        axes = tif.series[0].axes
+    if "C" in axes:
+        return int(shape[axes.index("C")])
+    return None
+
+
+def _mip_pixel_um(folder: Path) -> float | None:
+    """Voxel size in microns from the first MIP that still has LSM metadata."""
+    import tifffile
+
+    folder = Path(folder)
+    candidates = [p for p in folder.iterdir()
+                  if p.is_file() and p.suffix.lower() == ".lsm"]
+    # Prefer an original single-section MIP (has CZ_LSMINFO); mosaics in combined/ too.
+    for p in sorted(candidates) + sorted((folder / "combined").glob("*.lsm")
+                                         if (folder / "combined").is_dir() else []):
+        try:
+            with tifffile.TiffFile(str(p)) as tif:
+                md = tif.lsm_metadata
+            if md and md.get("VoxelSizeX"):
+                return float(md["VoxelSizeX"]) * 1e6
+        except Exception:
+            continue
+    return None
+
+
 def _ensure_slide_config(folder: Path) -> None:
     """Write a folder config if missing, using the cNrN_mip naming when that fits."""
     from .folder import CONFIG_HELP, CONFIG_NAME, DEFAULT_CONFIG
@@ -93,12 +135,22 @@ def _ensure_slide_config(folder: Path) -> None:
     names = [p.name for p in folder.iterdir() if p.is_file()]
     if any(_CNR_MIP.match(n) for n in names):
         config["pattern"] = r"^c(?P<col>\d+)r(?P<row>\d+)_mip\.lsm$"
-        config["channels"] = [
-            {"name": "gfp", "color": "green"},
-            {"name": "rfp", "color": "red"},
-            {"name": "nissl", "color": "blue"},
-        ]
+        n_ch = _mip_channel_count(folder)
+        if n_ch == 2:
+            config["channels"] = [
+                {"name": "gfp", "color": "green"},
+                {"name": "nissl", "color": "blue"},
+            ]
+        else:
+            config["channels"] = [
+                {"name": "gfp", "color": "green"},
+                {"name": "rfp", "color": "red"},
+                {"name": "nissl", "color": "blue"},
+            ]
         config["align_channel"] = "nissl"
+        px = _mip_pixel_um(folder)
+        if px is not None:
+            config["pixel_um"] = px
     with open(path, "w", encoding="utf-8") as f:
         json.dump({**config, "_help": CONFIG_HELP}, f, indent=2)
 

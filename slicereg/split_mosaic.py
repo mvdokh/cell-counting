@@ -55,37 +55,60 @@ def _thumb_size(height: int, width: int) -> tuple[int, int]:
     return max(1, int(round(height / scale))), max(1, int(round(width / scale)))
 
 
+def _photometric(channels: int) -> str:
+    """TIFF photometric for planar ``(C,Y,X)`` data (RGB only when C==3)."""
+    return "rgb" if channels == 3 else "minisblack"
+
+
 def _write_lsm_plane(tif: tifffile.TiffWriter, plane: np.ndarray, *,
                      lsminfo: bytes | None, thumb_h: int, thumb_w: int) -> None:
-    """Append one ``(C,Y,X)`` plane (plus its thumbnail) to an open LSM writer."""
+    """Append one ``(C,Y,X)`` plane (plus its thumbnail) to an open LSM writer.
+
+    ``lsminfo`` (CZ_LSMINFO) is only written for 3-channel RGB planes: tifffile
+    cannot read 2-channel files that carry that tag.
+    """
     plane = np.ascontiguousarray(plane)
+    photo = _photometric(plane.shape[0])
     kwargs: dict = {
-        "photometric": "rgb",
+        "photometric": photo,
         "planarconfig": "separate",
         "compression": None,
         "metadata": None,
         "subfiletype": 0,
     }
-    if lsminfo is not None:
+    # CZ_LSMINFO + 2 samples trips tifffile's LSM BitsPerSample fix on read.
+    if lsminfo is not None and plane.shape[0] == 3:
         kwargs["extratags"] = [(34412, "B", len(lsminfo), lsminfo, True)]
     tif.write(plane, **kwargs)
-    tif.write(_thumbnail(plane, thumb_h, thumb_w),
-              photometric="rgb", planarconfig="separate",
-              compression=None, metadata=None, subfiletype=1)
+    if plane.shape[0] == 3:
+        tif.write(_thumbnail(plane, thumb_h, thumb_w),
+                  photometric=photo, planarconfig="separate",
+                  compression=None, metadata=None, subfiletype=1)
 
 
 def write_lsm(path: Path, data: np.ndarray, lsminfo: bytes) -> None:
-    """Write ``data`` as a Zeiss-style LSM. ``data`` is ``(C,Y,X)`` or ``(Z,C,Y,X)``."""
+    """Write ``data`` as a Zeiss-style LSM. ``data`` is ``(C,Y,X)`` or ``(Z,C,Y,X)``.
+
+    Three-channel images keep a ``CZ_LSMINFO`` tag (pixel size, ZCYX). Other
+    channel counts are written as planar TIFF without that tag — set
+    ``pixel_um`` in ``slicereg_folder.json`` so imports still get a scale.
+    """
     path = Path(path)
     if data.ndim == 3:
         data = data[None]
     if data.ndim != 4:
         raise ValueError(f"expected (C,Y,X) or (Z,C,Y,X), got shape {data.shape}")
-    z, _c, h, w = data.shape
+    z, c, h, w = data.shape
     thumb_h, thumb_w = _thumb_size(h, w)
-    info = _patch_lsminfo(lsminfo, w, h, z, thumb_w, thumb_h)
+    info = _patch_lsminfo(lsminfo, w, h, z, thumb_w, thumb_h) if c == 3 else None
     path.parent.mkdir(parents=True, exist_ok=True)
     with tifffile.TiffWriter(str(path), bigtiff=True) as tif:
+        if c != 3 and z == 1:
+            # Single multi-channel page; axes metadata helps read_section.
+            tif.write(np.ascontiguousarray(data[0]),
+                      photometric=_photometric(c), planarconfig="separate",
+                      compression=None, metadata={"axes": "CYX"})
+            return
         for zi in range(z):
             _write_lsm_plane(tif, data[zi],
                              lsminfo=info if zi == 0 else None,
