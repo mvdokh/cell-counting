@@ -30,6 +30,14 @@ PAXINOS_ALIASES = {
 
 HEMISPHERES = ("both", "left", "right")
 STYLES = ("plastic", "shiny", "glossy", "metallic", "cartoon")
+CELL_STYLES = ("spheres", "heatmap", "both")
+CELL_STYLE_LABELS = {
+    "spheres": "Spheres (one per cell)",
+    "heatmap": "Heatmap (density)",
+    "both": "Spheres and heatmap",
+}
+HEATMAP_CMAP = "hot"
+HEATMAP_DIMS = (50, 50, 50)
 
 # Camera direction (from the brain's centre towards the camera) and screen-up vector,
 # in brainrender's rendered axes: x = posterior, y = ventral, z = right.
@@ -144,6 +152,38 @@ def section_texture(project, sid: int) -> np.ndarray:
     return np.concatenate([rgb, (mask * 255).astype(np.uint8)[..., None]], axis=2)
 
 
+def mirror_ml(pts: np.ndarray, ml_extent_um: float) -> np.ndarray:
+    """Reflect ``(ap, dv, ml)`` points across the mid-sagittal plane.
+
+    Section images are viewed as from behind the mouse (image left = animal left).
+    Allen/BrainGlobe ML runs right → left, so without this flip a cell on the left of
+    a section lands in the right hemisphere of the brainrender scene.
+    """
+    out = np.asarray(pts, dtype=float).copy()
+    out[..., 2] = float(ml_extent_um) - out[..., 2]
+    return out
+
+
+def cell_points_xyz(cells, ml_extent_um: float) -> np.ndarray:
+    """``(N, 3)`` AP/DV/ML microns for brainrender, with ML mirrored."""
+    if cells is None or not len(cells):
+        return np.zeros((0, 3), dtype=float)
+    return mirror_ml(cells[["ap_um", "dv_um", "ml_um"]].to_numpy(float), ml_extent_um)
+
+
+def add_cell_heatmap(scene, pts: np.ndarray, *, name: str = "heatmap",
+                     dims: tuple[int, int, int] = HEATMAP_DIMS,
+                     radius: float | None = None, cmap: str = HEATMAP_CMAP):
+    """Add a ``PointsDensity`` volume for ``pts`` already in mirrored atlas microns."""
+    from brainrender.actors import PointsDensity
+
+    if len(pts) < 2:
+        return None
+    # PointsDensity flips Z in place and skips Scene's axes transform.
+    return scene.add(PointsDensity(np.asarray(pts, float).copy(), name=name, dims=dims,
+                                   radius=radius, colors=cmap))
+
+
 def slice_mesh(atlas, project, sid: int, grid: int = 24):
     """Section preview as a textured mesh placed (with its warp) in atlas space."""
     import vedo
@@ -155,6 +195,7 @@ def slice_mesh(atlas, project, sid: int, grid: int = 24):
     u, v = np.meshgrid(np.linspace(0, 1, nx), np.linspace(0, 1, ny))
     xy = np.stack([u.ravel() * w, v.ravel() * h], 1)
     verts = atlas.plane_to_3d(tf.image_to_plane(xy), al.ap_um, al.pitch_deg, al.yaw_deg)
+    verts = mirror_ml(verts, atlas.extent_um[2])
     faces = [[j * nx + i, j * nx + i + 1, (j + 1) * nx + i + 1, (j + 1) * nx + i]
              for j in range(ny - 1) for i in range(nx - 1)]
     mesh = vedo.Mesh([verts, faces])
@@ -239,7 +280,9 @@ def build_scene(project, show_slices: bool = True, top_regions: int = 5,
                 region_alpha: float = 0.3, hemisphere: str = "both", radius: float = 25,
                 brain_alpha: float = 0.3, style: str = "plastic", show_axes: bool = False,
                 show_inset: bool = True, show_title: bool = True, offscreen: bool = False,
-                all_slides: bool = False, this_slide: bool = False):
+                all_slides: bool = False, this_slide: bool = False,
+                cell_style: str = "spheres", heatmap_radius: float | None = None,
+                heatmap_dims: int = HEATMAP_DIMS[0]):
     import brainrender
     from brainrender import Scene
     from brainrender.actors import Points
@@ -247,6 +290,8 @@ def build_scene(project, show_slices: bool = True, top_regions: int = 5,
     from .atlas import Atlas
     from .experiment import collect_experiment_cells, experiment_root, load_experiment_projects
 
+    if cell_style not in CELL_STYLES:
+        raise ValueError(f"cell_style must be one of {CELL_STYLES}, got {cell_style!r}")
     brainrender.settings.OFFSCREEN = offscreen
     brainrender.settings.SHADER_STYLE = style
     brainrender.settings.ROOT_ALPHA = float(brain_alpha)
@@ -264,15 +309,23 @@ def build_scene(project, show_slices: bool = True, top_regions: int = 5,
                   inset=show_inset, title=title)
     if not show_title:
         set_title_visible(scene, False)
+    atlas = Atlas(atlas_name)
+    ml_extent = float(atlas.extent_um[2])
     cells = collect_experiment_cells(project) if use_all else collect_cells(project)
     cells = cells.drop(columns=["slide"], errors="ignore")
     if cell_types:
         cells = cells[cells["cell_type"].isin(cell_types)]
-    if show_cells:
+    show_spheres = show_cells and cell_style in ("spheres", "both")
+    show_heatmap = show_cells and cell_style in ("heatmap", "both")
+    if show_spheres:
         for i, (ctype, df) in enumerate(cells.groupby("cell_type", sort=False)):
-            scene.add(Points(df[["ap_um", "dv_um", "ml_um"]].to_numpy(float),
-                             name=str(ctype), colors=cell_type_color(ctype, i),
+            pts = cell_points_xyz(df, ml_extent)
+            scene.add(Points(pts, name=str(ctype), colors=cell_type_color(ctype, i),
                              radius=radius))
+    if show_heatmap:
+        dims = (int(heatmap_dims),) * 3
+        add_cell_heatmap(scene, cell_points_xyz(cells, ml_extent), dims=dims,
+                         radius=heatmap_radius)
 
     regions = []  # (acronym, colour or None for the atlas colour)
     if structures:
@@ -295,10 +348,10 @@ def build_scene(project, show_slices: bool = True, top_regions: int = 5,
         scene.add_brain_region(*default, alpha=region_alpha, hemisphere=hemisphere)
     for acr, color in regions:
         if color is not None:
-            scene.add_brain_region(acr, alpha=region_alpha, color=color, hemisphere=hemisphere)
+            scene.add_brain_region(acr, alpha=region_alpha, color=color,
+                                   hemisphere=hemisphere)
 
     if show_slices:
-        atlas = Atlas(atlas_name)
         projects = (load_experiment_projects(project) if use_all
                     else [(None, project)])
         for slide, proj in projects:
@@ -357,6 +410,10 @@ class WindowControls:
             entries.append(([f"Hide {label}", f"Show {label}"],
                             self._toggle_points(actor),
                             [cell_type_color(label), "#e0e0e0"]))
+        for actor in scene.get_actors(br_class="density"):
+            label = str(getattr(actor, "name", "") or "heatmap")
+            entries.append(([f"Hide {label}", f"Show {label}"],
+                            self._toggle_points(actor), ["#ff6600", "#e0e0e0"]))
         entries.append((["Save image"], lambda *_: self.save_image(), ["#e0e0e0"]))
         for i, (states, fn, colors) in enumerate(entries):
             pos = (0.08, 0.95 - 0.045 * i - (0.02 if i >= len(VIEWS) else 0))
@@ -386,10 +443,15 @@ class WindowControls:
         plt.render()
 
     def _toggle_points(self, actor):
-        """Button callback that shows or hides one cell-type point cloud."""
+        """Button callback that shows or hides one cell cloud or density volume."""
         def fn(*_):
             mesh = actor._mesh
-            if mesh.actor.GetVisibility():
+            visible = True
+            try:
+                visible = bool(mesh.actor.GetVisibility())
+            except Exception:
+                visible = bool(getattr(mesh, "alpha", 1))
+            if visible:
                 mesh.off()
             else:
                 mesh.on()

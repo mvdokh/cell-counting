@@ -1,7 +1,10 @@
 import numpy as np
 
-from slicereg.render import (VIEWS, parse_color, region_target, resolve_regions, split_color,
-                             split_region_text, suggest_regions, view_camera)
+import pandas as pd
+
+from slicereg.render import (CELL_STYLES, VIEWS, cell_points_xyz, mirror_ml, parse_color,
+                             region_target, resolve_regions, split_color, split_region_text,
+                             suggest_regions, view_camera)
 
 STRUCTURES = [
     {"acronym": "IRN", "name": "Intermediate reticular nucleus"},
@@ -13,6 +16,27 @@ STRUCTURES = [
     {"acronym": "Acs5", "name": "Accessory trigeminal nucleus"},
     {"acronym": "VII", "name": "Facial motor nucleus"},
 ]
+
+
+def test_mirror_ml_swaps_hemispheres_around_midline():
+    pts = np.array([[1000.0, 2000.0, 1000.0],   # right side (small ML)
+                    [1000.0, 2000.0, 10000.0]])  # left side (large ML)
+    out = mirror_ml(pts, ml_extent_um=11400.0)
+    assert np.allclose(out[:, :2], pts[:, :2])
+    assert np.allclose(out[:, 2], [10400.0, 1400.0])
+    assert np.allclose(mirror_ml(out, 11400.0), pts)
+
+
+def test_cell_points_xyz_mirrors_ml_from_dataframe():
+    cells = pd.DataFrame({"ap_um": [1.0], "dv_um": [2.0], "ml_um": [1000.0]})
+    pts = cell_points_xyz(cells, ml_extent_um=11400.0)
+    assert pts.shape == (1, 3)
+    assert np.allclose(pts[0], [1.0, 2.0, 10400.0])
+    assert cell_points_xyz(pd.DataFrame(), 11400.0).shape == (0, 3)
+
+
+def test_cell_styles_are_documented():
+    assert CELL_STYLES == ("spheres", "heatmap", "both")
 
 
 def test_split_region_text():

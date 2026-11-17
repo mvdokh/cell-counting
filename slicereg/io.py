@@ -273,6 +273,24 @@ class Project:
                 or s.get("auto_crop", False) != self.data["auto_crop"]
                 or s.get("imported_file", s["file"]) != s["file"]]
 
+    @staticmethod
+    def _align_channels_to_project(img: np.ndarray, channels: list[dict] | None) -> np.ndarray:
+        """Pad/reorder file channels to match the project's channel list when possible.
+
+        Common mixed-slide case: some Zeiss MIPs are GFP+Nissl (2 channels) while the
+        project is configured GFP/RFP/Nissl (3). Insert a blank RFP so the Nissl stays
+        blue instead of being shown as red.
+        """
+        cfg = list(channels or [])
+        if not cfg or img.shape[2] == len(cfg):
+            return img
+        names = [str(c.get("name", "")).lower() for c in cfg]
+        if img.shape[2] == 2 and names == ["gfp", "rfp", "nissl"]:
+            blank = np.zeros(img.shape[:2] + (1,), dtype=img.dtype)
+            return np.ascontiguousarray(np.concatenate(
+                [img[..., :1], blank, img[..., 1:]], axis=2))
+        return img
+
     def import_section(self, sid: int, auto_crop: bool | None = None) -> None:
         """Read one section file of a folder project into the slice folder.
 
@@ -287,6 +305,7 @@ class Project:
         drop = [i for i in self.data.get("drop_channels") or [] if i < img.shape[2]]
         if drop:
             img = np.ascontiguousarray(np.delete(img, drop, axis=2))
+        img = self._align_channels_to_project(img, self.data.get("channels"))
         if self.status(sid)["cropped"] and s.get("mirrored"):
             self._mirror_slice_data(sid, s["size"][0])  # back to the file's orientation
         s["mirrored"] = False

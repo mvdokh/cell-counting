@@ -233,20 +233,22 @@ Options for `open`:
    structures to show (see below), choose how many top regions by cell count to add,
    the structure opacity and hemisphere, the whole-brain opacity, the surface style
    (smooth by default; *Cartoon* is brainrender's flat outlined look), the starting
-   view, the cell size (sphere radius in um, 25 by default; cells are always drawn
-   matte, whatever the surface style), and whether to show section images, cells, the
-   whole brain, axes / scale bars (off by default), the small
-   orientation brain in the corner and the title. Under *Cell types to show*, uncheck
-   a type (for example green or red) to leave it out. A type whose name is a colour
-   is drawn in that colour. The last choices are remembered.
+   view, how to draw cells (*Spheres*, *Heatmap* density, or *Both*), the cell size
+   (sphere radius in um, 25 by default; cells are always drawn matte, whatever the
+   surface style), the heatmap smoothing radius, and whether to show section images,
+   cells, the whole brain, axes / scale bars (off by default), the small orientation
+   brain in the corner and the title. Under *Cell types to show*, uncheck a type
+   (for example green or red) to leave it out. A type whose name is a colour is drawn
+   in that colour. The last choices are remembered.
    In the 3D window, buttons on the left snap the camera to a 3/4, front, back, left,
    right, top or bottom view. *Back, low* looks from behind and about 12 degrees
    below, aimed at the caudal end of IRt/PCRt, with the whole brain in frame. *Back,
    low, zoomed* uses the same angle but frames just IRt/PCRt. Both work whether or
    not those structures are shown. *Hide title* / *Show title* toggles the title, for
    example before saving, and *Hide green* / *Hide red* (one button per cell type)
-   toggles that type. *Save image* asks where to save a PNG at twice the window
-   resolution (default folder `renders` in the project).
+   toggles that type; *Hide heatmap* toggles the density volume when it is shown.
+   *Save image* asks where to save a PNG at twice the window resolution (default
+   folder `renders` in the project).
 
 Structure names can be Allen CCF acronyms (case doesn't matter) or these Paxinos
 abbreviations: IRt, PCRt, 12N, Mo5/5N, Pe5/peri5, Acs5/acc5, 7N/fmn. Separate them with
@@ -289,6 +291,8 @@ project folder:
 | `--hemisphere left/right/both` | Which side of the structures to draw |
 | `--no-slices` | Hide section images |
 | `--no-cells` / `--cell-types T ...` | Hide all cells, or show only these cell types |
+| `--cell-style S` | `spheres` (default), `heatmap` (3D density), or `both` |
+| `--heatmap-radius UM` | Density smoothing radius in microns (default 200) |
 | `--no-brain` | Hide the transparent whole brain |
 | `--brain-alpha A` | Whole-brain opacity, 0-1 (default 0.3) |
 | `--style S` | `plastic` (default), `shiny`, `glossy`, `metallic` or `cartoon` |

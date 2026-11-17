@@ -143,6 +143,18 @@ def test_reimaged_section_keeps_its_file_and_exclude_skips(tmp_path):
     assert project.load_image(2).shape[1] == 30 and project.sync_folder() == []
 
 
+def test_two_channel_gfp_nissl_pads_blank_rfp():
+    img = np.zeros((20, 30, 2), np.uint8)
+    img[..., 0], img[..., 1] = 10, 20
+    channels = [{"name": "gfp", "color": "green"},
+                {"name": "rfp", "color": "red"},
+                {"name": "nissl", "color": "blue"}]
+    out = Project._align_channels_to_project(img, channels)
+    assert out.shape == (20, 30, 3)
+    assert out[0, 0, 0] == 10 and out[0, 0, 1] == 0 and out[0, 0, 2] == 20
+    assert Project._align_channels_to_project(img, channels[:2]).shape == (20, 30, 2)
+
+
 def test_jpg_folder_drops_marked_channels(tmp_path):
     from PIL import Image
 

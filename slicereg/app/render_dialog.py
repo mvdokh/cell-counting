@@ -10,8 +10,9 @@ from qtpy.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDialog, QDialog
                             QDoubleSpinBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
                             QListWidget, QListWidgetItem, QPushButton, QSpinBox, QVBoxLayout)
 
-from ..render import (HEMISPHERES, STYLES, VIEW_LABELS, parse_color, resolve_regions,
-                      split_color, split_region_text, suggest_regions)
+from ..render import (CELL_STYLES, CELL_STYLE_LABELS, HEMISPHERES, STYLES, VIEW_LABELS,
+                      parse_color, resolve_regions, split_color, split_region_text,
+                      suggest_regions)
 
 RENDER_DEFAULTS = {
     "structures": "",
@@ -27,6 +28,8 @@ RENDER_DEFAULTS = {
     "inset": True,
     "title": True,
     "cell_size": 25.0,
+    "cell_style": "spheres",
+    "heatmap_radius": 200.0,
     "view": "three_quarter",
     "hidden_cell_types": [],
 }
@@ -108,6 +111,16 @@ class RenderDialog(QDialog):
         self.title.setChecked(opts["title"])
         self.cells = QCheckBox("Show cells")
         self.cells.setChecked(opts["cells"])
+        self.cell_style = QComboBox()
+        for key in CELL_STYLES:
+            self.cell_style.addItem(CELL_STYLE_LABELS[key], key)
+        style_key = opts.get("cell_style", "spheres")
+        if style_key not in CELL_STYLES:
+            style_key = "spheres"
+        self.cell_style.setCurrentIndex(CELL_STYLES.index(style_key))
+        self.cell_style.setToolTip(
+            "Spheres: one marker per cell. Heatmap: 3D density cloud. "
+            "Both: draw the density and the spheres together.")
         self.cell_size = QDoubleSpinBox()
         self.cell_size.setRange(2.0, 300.0)
         self.cell_size.setSingleStep(5.0)
@@ -115,6 +128,14 @@ class RenderDialog(QDialog):
         self.cell_size.setSuffix(" um")
         self.cell_size.setValue(float(opts["cell_size"]))
         self.cell_size.setToolTip("Radius of the sphere drawn for each cell.")
+        self.heatmap_radius = QDoubleSpinBox()
+        self.heatmap_radius.setRange(50.0, 2000.0)
+        self.heatmap_radius.setSingleStep(50.0)
+        self.heatmap_radius.setDecimals(0)
+        self.heatmap_radius.setSuffix(" um")
+        self.heatmap_radius.setValue(float(opts.get("heatmap_radius", 200.0)))
+        self.heatmap_radius.setToolTip(
+            "Smoothing radius for the density heatmap (larger = smoother / more blur).")
         self.cell_types_label = QLabel("Cell types to show")
         self.cell_types = QListWidget()
         self.cell_types.setToolTip("Uncheck a type to leave it out of the 3D view. "
@@ -126,12 +147,8 @@ class RenderDialog(QDialog):
             item.setCheckState(Qt.Unchecked if name in hidden else Qt.Checked)
             self.cell_types.addItem(item)
         self.cell_types.setMaximumHeight(90)
-        self.cells.toggled.connect(self.cell_types.setEnabled)
-        self.cells.toggled.connect(self.cell_types_label.setEnabled)
-        self.cell_types.setEnabled(opts["cells"])
-        self.cell_types_label.setEnabled(opts["cells"])
-        self.cells.toggled.connect(self.cell_size.setEnabled)
-        self.cell_size.setEnabled(opts["cells"])
+        self.cells.toggled.connect(self._sync_cell_controls)
+        self.cell_style.currentIndexChanged.connect(self._sync_cell_controls)
         self.brain.toggled.connect(self.brain_alpha.setEnabled)
         self.brain_alpha.setEnabled(opts["brain"])
 
@@ -144,7 +161,10 @@ class RenderDialog(QDialog):
         form.addRow("Whole-brain opacity", self.brain_alpha)
         form.addRow("Surface style", self.style)
         form.addRow("Starting view", self.view)
+        form.addRow("Cell display", self.cell_style)
         form.addRow("Cell size (radius)", self.cell_size)
+        form.addRow("Heatmap smooth radius", self.heatmap_radius)
+        self._sync_cell_controls()
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Ok).setText("Open 3D view")
@@ -165,6 +185,15 @@ class RenderDialog(QDialog):
         lay.addWidget(buttons)
         self.resize(520, self.sizeHint().height())
         self._update_preview()
+
+    def _sync_cell_controls(self, *_args) -> None:
+        on = self.cells.isChecked()
+        style = self.cell_style.currentData()
+        self.cell_style.setEnabled(on)
+        self.cell_types.setEnabled(on)
+        self.cell_types_label.setEnabled(on)
+        self.cell_size.setEnabled(on and style in ("spheres", "both"))
+        self.heatmap_radius.setEnabled(on and style in ("heatmap", "both"))
 
     def _on_pick_color(self) -> None:
         tokens = split_region_text(self.regions.text())
@@ -220,6 +249,8 @@ class RenderDialog(QDialog):
             "inset": self.inset.isChecked(),
             "title": self.title.isChecked(),
             "cell_size": self.cell_size.value(),
+            "cell_style": self.cell_style.currentData(),
+            "heatmap_radius": self.heatmap_radius.value(),
             "view": self.view.currentData(),
             "hidden_cell_types": hidden,
         }
@@ -228,7 +259,9 @@ class RenderDialog(QDialog):
         o = self.options()
         args = ["--regions", str(o["top_regions"]), "--alpha", str(o["alpha"]),
                 "--hemisphere", o["hemisphere"], "--brain-alpha", str(o["brain_alpha"]),
-                "--style", o["style"], "--view", o["view"], "--cell-size", f"{o['cell_size']:g}"]
+                "--style", o["style"], "--view", o["view"], "--cell-size", f"{o['cell_size']:g}",
+                "--cell-style", o["cell_style"],
+                "--heatmap-radius", f"{o['heatmap_radius']:g}"]
         found, _ = resolve_regions(split_region_text(o["structures"]), self.structures)
         if found:
             tokens = []
