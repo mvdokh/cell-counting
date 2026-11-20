@@ -103,11 +103,13 @@ def write_lsm(path: Path, data: np.ndarray, lsminfo: bytes) -> None:
     info = _patch_lsminfo(lsminfo, w, h, z, thumb_w, thumb_h) if c == 3 else None
     path.parent.mkdir(parents=True, exist_ok=True)
     with tifffile.TiffWriter(str(path), bigtiff=True) as tif:
-        if c != 3 and z == 1:
-            # Single multi-channel page; axes metadata helps read_section.
-            tif.write(np.ascontiguousarray(data[0]),
-                      photometric=_photometric(c), planarconfig="separate",
-                      compression=None, metadata={"axes": "CYX"})
+        if c != 3:
+            # Non-RGB: no CZ_LSMINFO (tifffile can't round-trip it). Tag axes so
+            # read_section can max-project Z stacks instead of seeing "ISYX".
+            axes = "CYX" if z == 1 else "ZCYX"
+            payload = np.ascontiguousarray(data[0] if z == 1 else data)
+            tif.write(payload, photometric=_photometric(c), planarconfig="separate",
+                      compression=None, metadata={"axes": axes})
             return
         for zi in range(z):
             _write_lsm_plane(tif, data[zi],
@@ -181,26 +183,41 @@ def split_mosaic(path: Path | str, rows: int, cols: int, *,
                 written.append(out)
                 print(f"wrote {out.name}  ({tile.shape})")
         else:
-            # Stream Z planes once: crop every tile from each plane and append.
+            # Stream Z planes once. RGB keeps CZ_LSMINFO page-by-page; other
+            # channel counts buffer crops and write via write_lsm (axes metadata).
             z = shape[0] if axes == "ZCYX" else 1
-            thumb_h, thumb_w = _thumb_size(tile_h, tile_w)
-            infos = [_patch_lsminfo(lsminfo, tile_w, tile_h, z, thumb_w, thumb_h)
-                     for _ in names]
+            channels = shape[-3]
             out_dir.mkdir(parents=True, exist_ok=True)
             paths = [out_dir / f"{name}.lsm" for name in names]
-            writers = [tifffile.TiffWriter(str(p), bigtiff=True) for p in paths]
-            try:
+            if channels != 3:
+                buffers: list[list[np.ndarray]] = [[] for _ in names]
                 for zi, page in enumerate(series.pages):
                     plane = page.asarray()
-                    for wri, info, (y0, y1, x0, x1) in zip(writers, infos, boxes):
-                        _write_lsm_plane(wri, plane[:, y0:y1, x0:x1],
-                                         lsminfo=info if zi == 0 else None,
-                                         thumb_h=thumb_h, thumb_w=thumb_w)
+                    for buf, (y0, y1, x0, x1) in zip(buffers, boxes):
+                        buf.append(np.asarray(plane[:, y0:y1, x0:x1]))
                     print(f"  plane {zi + 1}/{z}")
-            finally:
-                for wri in writers:
-                    wri.close()
-            for p in paths:
-                written.append(p)
-                print(f"wrote {p.name}")
+                for path_out, buf in zip(paths, buffers):
+                    tile = np.stack(buf, axis=0) if z > 1 else buf[0]
+                    write_lsm(path_out, tile, lsminfo)
+                    written.append(path_out)
+                    print(f"wrote {path_out.name}  ({tile.shape})")
+            else:
+                thumb_h, thumb_w = _thumb_size(tile_h, tile_w)
+                infos = [_patch_lsminfo(lsminfo, tile_w, tile_h, z, thumb_w, thumb_h)
+                         for _ in names]
+                writers = [tifffile.TiffWriter(str(p), bigtiff=True) for p in paths]
+                try:
+                    for zi, page in enumerate(series.pages):
+                        plane = page.asarray()
+                        for wri, info, (y0, y1, x0, x1) in zip(writers, infos, boxes):
+                            _write_lsm_plane(wri, plane[:, y0:y1, x0:x1],
+                                             lsminfo=info if zi == 0 else None,
+                                             thumb_h=thumb_h, thumb_w=thumb_w)
+                        print(f"  plane {zi + 1}/{z}")
+                finally:
+                    for wri in writers:
+                        wri.close()
+                for p in paths:
+                    written.append(p)
+                    print(f"wrote {p.name}")
     return written

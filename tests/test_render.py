@@ -3,8 +3,8 @@ import numpy as np
 import pandas as pd
 
 from slicereg.render import (CELL_COLOR_BY, CELL_STYLES, REGION_OTHER_LABEL,
-                             REGION_OUTSIDE_COLOR, VIEWS, cell_points_xyz, mirror_ml,
-                             parse_color, region_color, region_point_groups, region_target,
+                             REGION_OUTSIDE_COLOR, VIEWS, cell_points_xyz, parse_color,
+                             region_color, region_point_groups, region_target,
                              resolve_regions, split_color, split_region_text,
                              suggest_regions, view_camera)
 
@@ -20,21 +20,12 @@ STRUCTURES = [
 ]
 
 
-def test_mirror_ml_swaps_hemispheres_around_midline():
-    pts = np.array([[1000.0, 2000.0, 1000.0],   # right side (small ML)
-                    [1000.0, 2000.0, 10000.0]])  # left side (large ML)
-    out = mirror_ml(pts, ml_extent_um=11400.0)
-    assert np.allclose(out[:, :2], pts[:, :2])
-    assert np.allclose(out[:, 2], [10400.0, 1400.0])
-    assert np.allclose(mirror_ml(out, 11400.0), pts)
-
-
-def test_cell_points_xyz_mirrors_ml_from_dataframe():
+def test_cell_points_xyz_keeps_allen_ml():
     cells = pd.DataFrame({"ap_um": [1.0], "dv_um": [2.0], "ml_um": [1000.0]})
-    pts = cell_points_xyz(cells, ml_extent_um=11400.0)
+    pts = cell_points_xyz(cells)
     assert pts.shape == (1, 3)
-    assert np.allclose(pts[0], [1.0, 2.0, 10400.0])
-    assert cell_points_xyz(pd.DataFrame(), 11400.0).shape == (0, 3)
+    assert np.allclose(pts[0], [1.0, 2.0, 1000.0])
+    assert cell_points_xyz(pd.DataFrame()).shape == (0, 3)
 
 
 def test_cell_styles_are_documented():

@@ -44,12 +44,10 @@ class AlignWidget(QWidget):
         self.bregma = QLabel()
         self.lock = QCheckBox("Lock aspect ratio (scale X and Y together)")
         self.flip = QCheckBox("Mirror atlas left/right")
-        sides = view.slice.get("hemispheres")
-        if sides:
-            self.flip.setEnabled(False)
-            self.flip.setToolTip(
-                f"Set from the hemispheres file ({sides} in the original image): the image "
-                "is stored with the right hemisphere on the left, like the atlas.")
+        self.flip.setEnabled(False)
+        self.flip.setToolTip(
+            "Locked: atlas is kept so the left of the section has larger ML (animal left). "
+            "The section image is never flipped by this. Saving enforces it.")
 
         form = QFormLayout()
         form.addRow("AP position", self.spins["ap_um"])
@@ -117,7 +115,7 @@ class AlignWidget(QWidget):
         self._last_scale = (1.0, 1.0)
         for spin in self.spins.values():
             spin.valueChanged.connect(self._on_edit)
-        self.flip.toggled.connect(self._on_edit)
+        self.flip.toggled.connect(self._on_flip)
         self.deepslice.clicked.connect(
             lambda: view.run_deepslice(self.deepslice_invert.isChecked()))
         self.deepslice_undo.clicked.connect(view.undo_deepslice)
@@ -152,6 +150,27 @@ class AlignWidget(QWidget):
         self.ap_slider.blockSignals(False)
         self.bregma.setText(f"approx. {(BREGMA_AP_UM - ap) / 1000:+.2f} mm from bregma")
 
+    def _on_flip(self, checked: bool) -> None:
+        """Swap atlas L/R without moving the outline; section image stays put."""
+        from ..io import _mirror_atlas
+
+        al = self.view.alignment
+        if bool(al.flip) == bool(checked):
+            return
+        d = al.to_dict()
+        _mirror_atlas(d)
+        al.flip = bool(d["flip"])
+        al.yaw_deg = float(d["yaw_deg"])
+        al.landmarks = list(d["landmarks"])
+        self.spins["yaw_deg"].blockSignals(True)
+        self.spins["yaw_deg"].setValue(al.yaw_deg)
+        self.spins["yaw_deg"].blockSignals(False)
+        self.flip.blockSignals(True)
+        self.flip.setChecked(bool(al.flip))
+        self.flip.blockSignals(False)
+        self.n_landmarks.setText(f"{len(al.landmarks)} landmarks")
+        self.view.alignment_changed()
+
     def _on_edit(self, *_):
         al = self.view.alignment
         sx, sy = self.spins["scale_x"].value(), self.spins["scale_y"].value()
@@ -169,6 +188,5 @@ class AlignWidget(QWidget):
         for name in self.FIELDS:
             setattr(al, name, float(self.spins[name].value()))
         al.scale_x, al.scale_y = sx, sy
-        al.flip = self.flip.isChecked()
         self._sync_ap_labels(al.ap_um)
         self.view.alignment_changed()

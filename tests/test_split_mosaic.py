@@ -74,3 +74,14 @@ def test_write_lsm_two_channel_roundtrip(tmp_path: Path):
     img, px = read_section(path)
     assert img.shape == (20, 30, 2) and px is None
     assert img[0, 0, 0] == data[0, 0, 0]
+
+
+def test_write_lsm_two_channel_z_stack_roundtrip(tmp_path: Path):
+    data = np.arange(3 * 2 * 20 * 30, dtype=np.uint8).reshape(3, 2, 20, 30)
+    path = tmp_path / "two_ch_stack.lsm"
+    write_lsm(path, data, _fake_lsminfo(30, 20, z=3, channels=2))
+    with tifffile.TiffFile(str(path)) as tif:
+        assert tif.series[0].axes == "ZCYX"
+        assert tif.series[0].shape == (3, 2, 20, 30)
+    img, px = read_section(path)
+    assert img.shape == (20, 30, 2) and px is None

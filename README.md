@@ -145,10 +145,10 @@ named `001_1-2_Stitch_(c1+c2).jpg` (slide 1, section 2), with an empty red chann
 }
 ```
 
-**Hemispheres.** Sections can land on the slide either way up, so some images show the
-right hemisphere on the left and others the left. List them in `hemispheres.csv` in
-the image folder, with the hemisphere on the image's left in `x1` and on its right in
-`x2` (`L`/`R`; names are matched ignoring case, `_` and `-`):
+**Hemispheres.** Sections are viewed **from behind the mouse** (looking forward): the
+left of the section image is the left side of the animal's head. List orientations in
+`hemispheres.csv` in the image folder, with the hemisphere on the image's left in `x1`
+and on its right in `x2` (`L`/`R`; names are matched ignoring case, `_` and `-`):
 
 ```text
 slice,x1,x2
@@ -156,14 +156,15 @@ c4_r1,L,R
 c4_r2,R,L
 ```
 
-Every section is then stored with the right hemisphere on the image's left, like the
-atlas: `L,R` sections are mirrored left-right when imported or when you click *Rescan
-folder*. Alignments, landmarks and cells are mirrored with the image, so the atlas
-outline stays on the same tissue. Where an existing alignment had the atlas's
-hemispheres the wrong way round, the atlas is mirrored too. Its outline doesn't move,
-but left and right swap and the cells' hemisphere follows. For sections in the file,
-*Mirror atlas left/right* is locked because the file already decides it. Export again
-after a rescan that mirrors sections.
+Every section is then stored with the **left** hemisphere on the image's left: `R,L`
+sections are mirrored left-right when imported or when you click *Rescan folder*.
+Alignments, landmarks and cells are mirrored with the image, so the atlas outline
+stays on the same tissue. Where an existing alignment had the atlas's hemispheres the
+wrong way round, the atlas is mirrored too. Its outline doesn't move, but left and
+right swap and the cells' hemisphere follows. The atlas is always kept so the **left of
+the section image has larger ML** (animal left); that adjusts atlas L/R only and does
+not flip your section images. Export again after a rescan that mirrors sections.
+Brainrender uses the same from-behind convention (back view: animal left on the left).
 
 Options for `open`:
 

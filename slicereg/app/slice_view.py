@@ -93,7 +93,8 @@ class SliceView:
                    if i != self.sid and self.project.status(i)["aligned"]]
         spacing = float(self.project.data.get("section_spacing_um", 0.0))
         pos = ids.index(self.sid)
-        ap, pitch, yaw, rot, flip = self.atlas.extent_um[0] / 2, 0.0, 0.0, 0.0, False
+        # flip=True => image left = larger ML (animal left, from behind)
+        ap, pitch, yaw, rot, flip = self.atlas.extent_um[0] / 2, 0.0, 0.0, 0.0, True
         if aligned:
             nb_id, nb = min(aligned, key=lambda e: abs(ids.index(e[0]) - pos))
             ap = nb["ap_um"] + spacing * (pos - ids.index(nb_id))
@@ -435,9 +436,12 @@ class SliceView:
                                                self._deepslice_crop, self._image_size())
         new = deepslice.anchoring_to_alignment(anchoring, self.atlas.name,
                                                self.atlas.plane_size_um, self._image_size())
+        from ..io import ensure_bigger_ml_on_image_left
+
         old = self.alignment
-        if new.flip != old.flip:
-            new.flip, new.yaw_deg = old.flip, -new.yaw_deg
+        d = new.to_dict()
+        ensure_bigger_ml_on_image_left(d)
+        new = Alignment.from_dict(d)
         self._pre_deepslice = old
         self.alignment = new
         self.align_widget.load(new)
@@ -692,7 +696,17 @@ class SliceView:
             self.cursor.visible = True
 
     def save(self) -> None:
+        from ..io import ensure_bigger_ml_on_image_left
+
         al = self.alignment
+        d = al.to_dict()
+        if ensure_bigger_ml_on_image_left(d):
+            al.flip = bool(d["flip"])
+            al.yaw_deg = float(d["yaw_deg"])
+            al.landmarks = list(d["landmarks"])
+            self.align_widget.load(al)
+            self._sync_landmark_points()
+            self.alignment_changed()
         self.project.save_alignment(self.sid, al.to_dict())
         self._refresh_overlay()
         save_overlay_png(self.project.slice_dir(self.sid) / "overlay.png", self.preview,

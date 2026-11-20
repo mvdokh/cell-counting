@@ -44,9 +44,9 @@ CONFIG_HELP = {
     "section_spacing_um": "AP distance between consecutive sections in cutting order "
                           "(section thickness); only used when the project is created",
     "hemispheres": "optional CSV in this folder with columns slice,x1,x2: which "
-                   "hemisphere (L/R) is on the image's left (x1) and right (x2). Sections "
-                   "with the left hemisphere on the image's left are mirrored so every "
-                   "section has the right hemisphere on the left, like the atlas",
+                   "hemisphere (L/R) is on the image's left (x1) and right (x2). "
+                   "Sections are stored as viewed from behind (image left = animal "
+                   "left); R,L files are mirrored so every section has L on the left",
 }
 
 

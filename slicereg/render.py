@@ -168,23 +168,15 @@ def section_texture(project, sid: int) -> np.ndarray:
     return np.concatenate([rgb, (mask * 255).astype(np.uint8)[..., None]], axis=2)
 
 
-def mirror_ml(pts: np.ndarray, ml_extent_um: float) -> np.ndarray:
-    """Reflect ``(ap, dv, ml)`` points across the mid-sagittal plane.
+def cell_points_xyz(cells, ml_extent_um: float | None = None) -> np.ndarray:
+    """``(N, 3)`` AP/DV/ML microns for brainrender (Allen/BrainGlobe ASR).
 
-    Section images are viewed as from behind the mouse (image left = animal left).
-    Allen/BrainGlobe ML runs right → left, so without this flip a cell on the left of
-    a section lands in the right hemisphere of the brainrender scene.
+    Brainrender's scene transform already maps ML so a caudal (from-behind) view
+    shows animal left on the left; do not pre-flip ML here.
     """
-    out = np.asarray(pts, dtype=float).copy()
-    out[..., 2] = float(ml_extent_um) - out[..., 2]
-    return out
-
-
-def cell_points_xyz(cells, ml_extent_um: float) -> np.ndarray:
-    """``(N, 3)`` AP/DV/ML microns for brainrender, with ML mirrored."""
     if cells is None or not len(cells):
         return np.zeros((0, 3), dtype=float)
-    return mirror_ml(cells[["ap_um", "dv_um", "ml_um"]].to_numpy(float), ml_extent_um)
+    return cells[["ap_um", "dv_um", "ml_um"]].to_numpy(float)
 
 
 def region_color(acronym: str, index: int = 0,
@@ -304,7 +296,6 @@ def slice_mesh(atlas, project, sid: int, grid: int = 24):
     u, v = np.meshgrid(np.linspace(0, 1, nx), np.linspace(0, 1, ny))
     xy = np.stack([u.ravel() * w, v.ravel() * h], 1)
     verts = atlas.plane_to_3d(tf.image_to_plane(xy), al.ap_um, al.pitch_deg, al.yaw_deg)
-    verts = mirror_ml(verts, atlas.extent_um[2])
     faces = [[j * nx + i, j * nx + i + 1, (j + 1) * nx + i + 1, (j + 1) * nx + i]
              for j in range(ny - 1) for i in range(nx - 1)]
     mesh = vedo.Mesh([verts, faces])

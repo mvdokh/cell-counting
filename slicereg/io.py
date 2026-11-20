@@ -127,12 +127,18 @@ def tissue_mask(img: np.ndarray, threshold: float, dark_background: bool,
     return np.isin(lab, keep)
 
 
-def _right_hemisphere_left(al: dict) -> bool:
-    """Whether an alignment puts the atlas's right hemisphere on the image's left.
+def _left_hemisphere_left(al: dict) -> bool:
+    """Whether an alignment puts the atlas's left hemisphere on the image's left.
 
-    The atlas plane's first axis runs from the right hemisphere to the left; it points
-    to the image's right when the in-plane rotation and mirror don't reverse it."""
-    return np.cos(np.radians(al["rotation_deg"])) * (-1.0 if al["flip"] else 1.0) > 0
+    Sections are viewed from behind the mouse (looking forward): image left = animal
+    left. The atlas plane's first axis runs right → left, so that matches when the
+    in-plane rotation and mirror reverse it (typically ``flip=True``)."""
+    return np.cos(np.radians(al["rotation_deg"])) * (-1.0 if al["flip"] else 1.0) < 0
+
+
+# Older name kept for any external imports.
+def _right_hemisphere_left(al: dict) -> bool:
+    return not _left_hemisphere_left(al)
 
 
 def _mirror_atlas(al: dict) -> None:
@@ -142,6 +148,14 @@ def _mirror_atlas(al: dict) -> None:
     al["yaw_deg"] = -al["yaw_deg"]
     w = float(al["plane_size_um"][0])
     al["landmarks"] = [[w - s, t, x, y] for s, t, x, y in al["landmarks"]]
+
+
+def ensure_bigger_ml_on_image_left(al: dict) -> bool:
+    """Force image-left = larger Allen ML (animal left / from behind). Returns if changed."""
+    if _left_hemisphere_left(al):
+        return False
+    _mirror_atlas(al)
+    return True
 
 
 class Project:
@@ -265,7 +279,8 @@ class Project:
                     entry["hemispheres"] = side
                 else:
                     entry.pop("hemispheres", None)
-                entry["mirror"] = side == "L,R"
+                # From behind: image left should be animal left. Mirror R,L files.
+                entry["mirror"] = side == "R,L"
             slices.append(entry)
         self.data["slices"] = slices
         self.save()
@@ -338,35 +353,34 @@ class Project:
         return bool(s.get("mirror", False)) ^ bool(s.get("user_flipped", False))
 
     def apply_hemispheres(self, atlas=None) -> list[int]:
-        """Give every section the atlas's orientation: right hemisphere on the image's
-        left. Returns the ids that changed.
+        """Apply image mirrors from the hemispheres CSV / user flips, and force atlas
+        L/R so image-left has larger ML. Returns the ids that changed.
 
-        Sections marked ``mirror`` (from the folder's hemispheres CSV) have their image,
-        preview and mask mirrored left-right, with alignment, landmarks and cells
-        mirrored along so the atlas outline stays on the same tissue. A manual
-        ``user_flipped`` flag (Flip horizontally in the slide view) is applied on top
-        of that, so Rescan does not undo user flips. Then, where the hemispheres are
-        known, an atlas fitted with its hemispheres the wrong way round is mirrored
-        (flip toggled, yaw negated): its outline doesn't move, but its left and right
-        swap. Cells are re-mapped so their hemisphere follows."""
+        Image orientation: sections marked ``mirror`` (CSV ``R,L``) XOR ``user_flipped``
+        are mirrored on disk; alignment/cells follow so the outline stays on the same
+        tissue. Atlas orientation: for sections whose image was not mirrored this pass,
+        the atlas is corrected so the left of the (current) image has larger Allen ML
+        without moving the outline. Cells are re-mapped when anything changed."""
         changed = []
         for s in self.slices:
             sid = s["id"]
             if not self.status(sid)["cropped"]:
                 continue
-            moved = False
+            moved_image = False
             want = self._want_mirrored(s)
             if bool(s.get("mirrored", False)) != want:
                 self._mirror_files(sid)
                 self._mirror_slice_data(sid, s["size"][0])
                 s["mirrored"] = want
-                moved = True
+                moved_image = True
             al = self.load_alignment(sid)
-            if s.get("hemispheres") and al is not None and not _right_hemisphere_left(al):
-                _mirror_atlas(al)
-                self.save_alignment(sid, al)
-                moved = True
-            if moved:
+            moved_atlas = False
+            # After an image mirror, flip was toggled with the tissue — do not
+            # re-swap atlas L/R or labels leave the tissue they belong to.
+            if al is not None and not moved_image and ensure_bigger_ml_on_image_left(al):
+                self.save_alignment(sid, al, enforce_ml=False)
+                moved_atlas = True
+            if moved_image or moved_atlas:
                 changed.append(sid)
                 cells = self.load_cells(sid)
                 if al is not None and cells is not None and len(cells):
@@ -380,6 +394,29 @@ class Project:
                     self.save_cells(sid, map_cells(atlas, Alignment.from_dict(al), xy,
                                                    cells["cell_type"].tolist(), sid))
         self.save()
+        return changed
+
+    def fix_atlas_ml_orientation(self, atlas=None) -> list[int]:
+        """For every aligned section, swap atlas L/R if needed so image-left has larger
+        ML. Does not change section images. Remaps cells. Returns changed slice ids."""
+        from .atlas import Atlas
+        from .export import map_cells
+        from .transform import Alignment
+
+        changed = []
+        for s in self.slices:
+            sid = s["id"]
+            al = self.load_alignment(sid)
+            if al is None or not ensure_bigger_ml_on_image_left(al):
+                continue
+            self.save_alignment(sid, al, enforce_ml=False)
+            cells = self.load_cells(sid)
+            if cells is not None and len(cells):
+                atlas = atlas or Atlas(self.data["atlas"])
+                xy = cells[["x_px", "y_px"]].to_numpy(float)
+                self.save_cells(sid, map_cells(atlas, Alignment.from_dict(al), xy,
+                                               cells["cell_type"].tolist(), sid))
+            changed.append(sid)
         return changed
 
     def _mirror_files(self, sid: int) -> None:
@@ -401,7 +438,8 @@ class Project:
             al["flip"] = not al["flip"]
             al["tx"] = width - 1 - al["tx"]
             al["landmarks"] = [[s, t, width - 1 - x, y] for s, t, x, y in al["landmarks"]]
-            self.save_alignment(sid, al)
+            # Keep the flipped flip bit: do not re-enforce ML side here.
+            self.save_alignment(sid, al, enforce_ml=False)
         cells = self.load_cells(sid)
         if cells is not None:
             cells["x_px"] = width - 1 - cells["x_px"]
@@ -613,7 +651,9 @@ class Project:
         with open(p) as f:
             return json.load(f)
 
-    def save_alignment(self, sid: int, alignment: dict) -> None:
+    def save_alignment(self, sid: int, alignment: dict, *, enforce_ml: bool = True) -> None:
+        if enforce_ml:
+            ensure_bigger_ml_on_image_left(alignment)
         with open(self.slice_dir(sid) / "alignment.json", "w") as f:
             json.dump(alignment, f, indent=2)
 
