@@ -111,6 +111,8 @@ class SlideView:
                             lambda: self._on_regions_plot("region")),
                            ("Plot cells by hemisphere",
                             lambda: self._on_regions_plot("hemisphere")),
+                           ("Plot cells by brain division",
+                            lambda: self._on_regions_plot("groups")),
                            ("Export all cells (CSV)", self._on_export),
                            ("3D view in brainrender", self._on_render)]:
             b = QPushButton(text)
@@ -270,7 +272,7 @@ class SlideView:
             QMessageBox.information(None, "No cells",
                                     "Count cells on at least one section first.")
             return
-        RegionsPlot(cells, kind=kind,
+        RegionsPlot(cells, kind=kind, atlas_name=self.project.data["atlas"],
                     parent=getattr(self.viewer.window, "_qt_window", None),
                     save_dir=self.project.root).exec()
 

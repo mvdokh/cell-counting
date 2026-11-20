@@ -10,9 +10,9 @@ from qtpy.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDialog, QDialog
                             QDoubleSpinBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
                             QListWidget, QListWidgetItem, QPushButton, QSpinBox, QVBoxLayout)
 
-from ..render import (CELL_STYLES, CELL_STYLE_LABELS, HEMISPHERES, STYLES, VIEW_LABELS,
-                      parse_color, resolve_regions, split_color, split_region_text,
-                      suggest_regions)
+from ..render import (CELL_COLOR_BY, CELL_COLOR_BY_LABELS, CELL_STYLES, CELL_STYLE_LABELS,
+                      HEMISPHERES, STYLES, VIEW_LABELS, parse_color, resolve_regions,
+                      split_color, split_region_text, suggest_regions)
 
 RENDER_DEFAULTS = {
     "structures": "",
@@ -29,6 +29,8 @@ RENDER_DEFAULTS = {
     "title": True,
     "cell_size": 25.0,
     "cell_style": "spheres",
+    "cell_color_by": "type",
+    "cell_color_regions": "",
     "heatmap_radius": 200.0,
     "view": "three_quarter",
     "hidden_cell_types": [],
@@ -121,6 +123,22 @@ class RenderDialog(QDialog):
         self.cell_style.setToolTip(
             "Spheres: one marker per cell. Heatmap: 3D density cloud. "
             "Both: draw the density and the spheres together.")
+        self.cell_color_by = QComboBox()
+        for key in CELL_COLOR_BY:
+            self.cell_color_by.addItem(CELL_COLOR_BY_LABELS[key], key)
+        color_key = opts.get("cell_color_by", "type")
+        if color_key not in CELL_COLOR_BY:
+            color_key = "type"
+        self.cell_color_by.setCurrentIndex(CELL_COLOR_BY.index(color_key))
+        self.cell_color_by.setToolTip(
+            "Colour each sphere by its cell type, or by the Allen atlas region it sits in "
+            "(distinct colours per region, not the atlas mesh colours).")
+        self.cell_color_by.currentIndexChanged.connect(self._sync_cell_controls)
+        self.cell_color_regions = QLineEdit(opts.get("cell_color_regions", ""))
+        self.cell_color_regions.setPlaceholderText("empty = all; e.g. IRt PCRt")
+        self.cell_color_regions.setToolTip(
+            "When colouring by region: only these acronyms get bright colours; all other "
+            "cells are drawn grey as one 'other' cloud. Leave empty to colour every region.")
         self.cell_size = QDoubleSpinBox()
         self.cell_size.setRange(2.0, 300.0)
         self.cell_size.setSingleStep(5.0)
@@ -162,6 +180,8 @@ class RenderDialog(QDialog):
         form.addRow("Surface style", self.style)
         form.addRow("Starting view", self.view)
         form.addRow("Cell display", self.cell_style)
+        form.addRow("Colour cells by", self.cell_color_by)
+        form.addRow("Highlight regions", self.cell_color_regions)
         form.addRow("Cell size (radius)", self.cell_size)
         form.addRow("Heatmap smooth radius", self.heatmap_radius)
         self._sync_cell_controls()
@@ -189,10 +209,13 @@ class RenderDialog(QDialog):
     def _sync_cell_controls(self, *_args) -> None:
         on = self.cells.isChecked()
         style = self.cell_style.currentData()
+        spheres = on and style in ("spheres", "both")
         self.cell_style.setEnabled(on)
+        self.cell_color_by.setEnabled(spheres)
+        self.cell_color_regions.setEnabled(spheres and self.cell_color_by.currentData() == "region")
         self.cell_types.setEnabled(on)
         self.cell_types_label.setEnabled(on)
-        self.cell_size.setEnabled(on and style in ("spheres", "both"))
+        self.cell_size.setEnabled(spheres)
         self.heatmap_radius.setEnabled(on and style in ("heatmap", "both"))
 
     def _on_pick_color(self) -> None:
@@ -250,6 +273,8 @@ class RenderDialog(QDialog):
             "title": self.title.isChecked(),
             "cell_size": self.cell_size.value(),
             "cell_style": self.cell_style.currentData(),
+            "cell_color_by": self.cell_color_by.currentData(),
+            "cell_color_regions": self.cell_color_regions.text().strip(),
             "heatmap_radius": self.heatmap_radius.value(),
             "view": self.view.currentData(),
             "hidden_cell_types": hidden,
@@ -260,8 +285,13 @@ class RenderDialog(QDialog):
         args = ["--regions", str(o["top_regions"]), "--alpha", str(o["alpha"]),
                 "--hemisphere", o["hemisphere"], "--brain-alpha", str(o["brain_alpha"]),
                 "--style", o["style"], "--view", o["view"], "--cell-size", f"{o['cell_size']:g}",
-                "--cell-style", o["cell_style"],
+                "--cell-style", o["cell_style"], "--cell-color", o["cell_color_by"],
                 "--heatmap-radius", f"{o['heatmap_radius']:g}"]
+        if o["cell_color_by"] == "region" and o["cell_color_regions"]:
+            found, _ = resolve_regions(split_region_text(o["cell_color_regions"]),
+                                       self.structures)
+            if found:
+                args += ["--cell-regions", *[acr for _, acr, _ in found]]
         found, _ = resolve_regions(split_region_text(o["structures"]), self.structures)
         if found:
             tokens = []

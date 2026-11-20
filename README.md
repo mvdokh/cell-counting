@@ -122,8 +122,11 @@ siblings. Section order for plots and 3D runs through the slides in numeric orde
 then by the folder config's column/row order within a slide — so after the last
 section of slide 7 (e.g. `c5_r3`) comes the first of slide 8 (`c1_r1`).
 
-- **Plot AP & pitch (all slides)**, **Plot cells by region (all slides)** and
-  **Plot cells by hemisphere (all slides)** use every slide's alignments and cells.
+- **Plot AP & pitch (all slides)**, **Plot cells by region (all slides)**,
+  **Plot cells by hemisphere (all slides)** and
+  **Plot cells by brain division (all slides)** use every slide's alignments and cells.
+  The brain-division plot groups cortex, midbrain, brainstem (hindbrain), etc., shows
+  top regions inside cortex / midbrain / brainstem, and a sensory vs motor summary.
 - **3D view in brainrender (all slides)** draws cells and section images from the
   whole experiment (title = the experiment folder name). Use `--this-slide` on the
   command line to render only the current project.
@@ -233,7 +236,10 @@ Options for `open`:
    structures to show (see below), choose how many top regions by cell count to add,
    the structure opacity and hemisphere, the whole-brain opacity, the surface style
    (smooth by default; *Cartoon* is brainrender's flat outlined look), the starting
-   view, how to draw cells (*Spheres*, *Heatmap* density, or *Both*), the cell size
+   view, how to draw cells (*Spheres*, *Heatmap* density, or *Both*), whether to colour
+   spheres by *cell type* or by *atlas region* (distinct colours per region; optionally
+   type a few acronyms under *Highlight regions*, e.g. `IRt PCRt`, so only those are
+   coloured and the rest stay grey), the cell size
    (sphere radius in um, 25 by default; cells are always drawn matte, whatever the
    surface style), the heatmap smoothing radius, and whether to show section images,
    cells, the whole brain, axes / scale bars (off by default), the small orientation
@@ -245,8 +251,9 @@ Options for `open`:
    below, aimed at the caudal end of IRt/PCRt, with the whole brain in frame. *Back,
    low, zoomed* uses the same angle but frames just IRt/PCRt. Both work whether or
    not those structures are shown. *Hide title* / *Show title* toggles the title, for
-   example before saving, and *Hide green* / *Hide red* (one button per cell type)
-   toggles that type; *Hide heatmap* toggles the density volume when it is shown.
+   example before saving, and *Hide …* buttons (one per cell type, or per atlas
+   region when colouring by region) toggle each cloud; *Hide heatmap* toggles the
+   density volume when it is shown.
    *Save image* asks where to save a PNG at twice the window resolution (default
    folder `renders` in the project).
 
@@ -278,6 +285,8 @@ project folder:
   aren't ranked but still count towards the percentages. The 3D view's top regions use
   the same ranking.
 - `top_regions.png` is a bar plot of the cell count per region, in the same order.
+- `cells_by_brain_division.png` (from **Plot cells by brain division**) shows major
+  divisions, sensory vs motor, and top regions within cortex / midbrain / brainstem.
 - `top_regions_by_hemisphere.png` shows the total cells in each hemisphere, and each
   region's left and right counts side by side, in the same order.
 
@@ -292,6 +301,8 @@ project folder:
 | `--no-slices` | Hide section images |
 | `--no-cells` / `--cell-types T ...` | Hide all cells, or show only these cell types |
 | `--cell-style S` | `spheres` (default), `heatmap` (3D density), or `both` |
+| `--cell-color C` | Colour spheres by `type` (default) or atlas `region` |
+| `--cell-regions N…` | With `--cell-color region`: only these acronyms get bright colours; others grey |
 | `--heatmap-radius UM` | Density smoothing radius in microns (default 200) |
 | `--no-brain` | Hide the transparent whole brain |
 | `--brain-alpha A` | Whole-brain opacity, 0-1 (default 0.3) |

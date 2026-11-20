@@ -36,6 +36,22 @@ CELL_STYLE_LABELS = {
     "heatmap": "Heatmap (density)",
     "both": "Spheres and heatmap",
 }
+CELL_COLOR_BY = ("type", "region")
+CELL_COLOR_BY_LABELS = {
+    "type": "Cell type",
+    "region": "Atlas region",
+}
+# High-contrast categorical palette for colour-by-region (Allen atlas RGB is too
+# similar across neighbouring nuclei). Outside / root stay muted grey.
+REGION_COLORS = [
+    "#e41a1c", "#377eb8", "#4daf4a", "#984ea3", "#ff7f00",
+    "#a65628", "#f781bf", "#66c2a5", "#fc8d62", "#8da0cb",
+    "#e78ac3", "#a6d854", "#ffd92f", "#e5c494", "#1b9e77",
+    "#d95f02", "#7570b3", "#e7298a", "#66a61e", "#e6ab02",
+    "#00bcd4", "#ff5722", "#3f51b5", "#cddc39", "#795548",
+]
+REGION_OUTSIDE_COLOR = "#888888"
+REGION_OTHER_LABEL = "other"
 HEATMAP_CMAP = "hot"
 HEATMAP_DIMS = (50, 50, 50)
 
@@ -171,6 +187,99 @@ def cell_points_xyz(cells, ml_extent_um: float) -> np.ndarray:
     return mirror_ml(cells[["ap_um", "dv_um", "ml_um"]].to_numpy(float), ml_extent_um)
 
 
+def region_color(acronym: str, index: int = 0,
+                 highlight: set[str] | None = None) -> str:
+    """Distinct hex colour for a region cloud (by rank index, not Allen atlas RGB).
+
+    If ``highlight`` is set, only those Allen acronyms get bright colours; everything
+    else (including outside/root) is grey.
+    """
+    key = str(acronym).strip()
+    if key.lower() in NOT_REGIONS:
+        return REGION_OUTSIDE_COLOR
+    if highlight is not None and key not in highlight:
+        return REGION_OUTSIDE_COLOR
+    return REGION_COLORS[index % len(REGION_COLORS)]
+
+
+def region_point_groups(cells, highlight: set[str] | None = None
+                        ) -> list[tuple[str, object, str]]:
+    """Split cells into ``(label, dataframe, colour)`` for colour-by-region.
+
+    Without ``highlight``, one group per region (bright palette by size rank;
+    outside/root grey). With ``highlight``, named regions get the palette and all
+    remaining cells are merged into a single grey ``other`` group.
+    """
+    if cells is None or not len(cells):
+        return []
+    order = cells.groupby("region_acronym", sort=False).size().sort_values(
+        ascending=False).index
+    groups: list[tuple[str, object, str]] = []
+    if highlight is None:
+        palette_i = 0
+        for name in order:
+            df = cells[cells["region_acronym"] == name]
+            if not len(df):
+                continue
+            color = region_color(str(name), palette_i)
+            if str(name).strip().lower() not in NOT_REGIONS:
+                palette_i += 1
+            groups.append((str(name), df, color))
+        return groups
+
+    palette_i = 0
+    other_parts = []
+    for name in order:
+        df = cells[cells["region_acronym"] == name]
+        if not len(df):
+            continue
+        if str(name) in highlight:
+            color = region_color(str(name), palette_i, highlight=highlight)
+            palette_i += 1
+            groups.append((str(name), df, color))
+        else:
+            other_parts.append(df)
+    if other_parts:
+        import pandas as pd
+
+        other = pd.concat(other_parts, ignore_index=True)
+        groups.append((REGION_OTHER_LABEL, other, REGION_OUTSIDE_COLOR))
+    return groups
+
+
+def add_cell_points(scene, cells, ml_extent_um: float, *, radius: float,
+                    color_by: str = "type", atlas=None,
+                    highlight_regions: set[str] | None = None) -> list:
+    """Add one ``Points`` actor per cell type or per atlas region. Returns the actors."""
+    from brainrender.actors import Points
+
+    if cells is None or not len(cells):
+        return []
+    if color_by not in CELL_COLOR_BY:
+        raise ValueError(f"color_by must be one of {CELL_COLOR_BY}, got {color_by!r}")
+    actors = []
+    if color_by == "region":
+        entries = [(label, df, color)
+                   for label, df, color in region_point_groups(cells, highlight_regions)]
+    else:
+        order = cells.groupby("cell_type", sort=False).size().sort_values(
+            ascending=False).index
+        entries = []
+        for i, name in enumerate(order):
+            df = cells[cells["cell_type"] == name]
+            if len(df):
+                entries.append((str(name), df, cell_type_color(str(name), i)))
+    for label, df, color in entries:
+        pts = cell_points_xyz(df, ml_extent_um)
+        if not len(pts):
+            continue
+        added = scene.add(Points(pts, name=label, colors=color, radius=radius))
+        for actor in (added if isinstance(added, list) else [added]):
+            actor._slicereg_color = color
+            actors.append(actor)
+    return actors
+
+
 def add_cell_heatmap(scene, pts: np.ndarray, *, name: str = "heatmap",
                      dims: tuple[int, int, int] = HEATMAP_DIMS,
                      radius: float | None = None, cmap: str = HEATMAP_CMAP):
@@ -282,16 +391,18 @@ def build_scene(project, show_slices: bool = True, top_regions: int = 5,
                 show_inset: bool = True, show_title: bool = True, offscreen: bool = False,
                 all_slides: bool = False, this_slide: bool = False,
                 cell_style: str = "spheres", heatmap_radius: float | None = None,
-                heatmap_dims: int = HEATMAP_DIMS[0]):
+                heatmap_dims: int = HEATMAP_DIMS[0], cell_color_by: str = "type",
+                cell_color_regions: list[str] | None = None):
     import brainrender
     from brainrender import Scene
-    from brainrender.actors import Points
 
     from .atlas import Atlas
     from .experiment import collect_experiment_cells, experiment_root, load_experiment_projects
 
     if cell_style not in CELL_STYLES:
         raise ValueError(f"cell_style must be one of {CELL_STYLES}, got {cell_style!r}")
+    if cell_color_by not in CELL_COLOR_BY:
+        raise ValueError(f"cell_color_by must be one of {CELL_COLOR_BY}, got {cell_color_by!r}")
     brainrender.settings.OFFSCREEN = offscreen
     brainrender.settings.SHADER_STYLE = style
     brainrender.settings.ROOT_ALPHA = float(brain_alpha)
@@ -315,13 +426,21 @@ def build_scene(project, show_slices: bool = True, top_regions: int = 5,
     cells = cells.drop(columns=["slide"], errors="ignore")
     if cell_types:
         cells = cells[cells["cell_type"].isin(cell_types)]
+    highlight = None
+    if cell_color_by == "region" and cell_color_regions:
+        queries = [t for s in cell_color_regions for t in split_region_text(s)]
+        found, missing = resolve_regions(queries, list(atlas.structures.values()))
+        highlight = {acr for _, acr, _ in found}
+        if missing:
+            print(f"Unknown cell-colour regions (skipped): {', '.join(missing)}")
+        if not highlight:
+            highlight = None
     show_spheres = show_cells and cell_style in ("spheres", "both")
     show_heatmap = show_cells and cell_style in ("heatmap", "both")
     if show_spheres:
-        for i, (ctype, df) in enumerate(cells.groupby("cell_type", sort=False)):
-            pts = cell_points_xyz(df, ml_extent)
-            scene.add(Points(pts, name=str(ctype), colors=cell_type_color(ctype, i),
-                             radius=radius))
+        add_cell_points(scene, cells, ml_extent, radius=radius,
+                        color_by=cell_color_by, atlas=atlas,
+                        highlight_regions=highlight)
     if show_heatmap:
         dims = (int(heatmap_dims),) * 3
         add_cell_heatmap(scene, cell_points_xyz(cells, ml_extent), dims=dims,
@@ -407,9 +526,10 @@ class WindowControls:
                             ["Show title", "Hide title"], self.toggle_title, ["#e0e0e0"]))
         for actor in scene.get_actors(br_class="Points"):
             label = str(getattr(actor, "name", "") or "cells")
+            color = getattr(actor, "_slicereg_color", None) or cell_type_color(label)
             entries.append(([f"Hide {label}", f"Show {label}"],
                             self._toggle_points(actor),
-                            [cell_type_color(label), "#e0e0e0"]))
+                            [color, "#e0e0e0"]))
         for actor in scene.get_actors(br_class="density"):
             label = str(getattr(actor, "name", "") or "heatmap")
             entries.append(([f"Hide {label}", f"Show {label}"],

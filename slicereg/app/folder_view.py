@@ -318,6 +318,8 @@ class FolderView(SlideView):
                             lambda: self._on_regions_plot("region")),
                            ("Plot cells by hemisphere (all slides)",
                             lambda: self._on_regions_plot("hemisphere")),
+                           ("Plot cells by brain division (all slides)",
+                            lambda: self._on_regions_plot("groups")),
                            ("Export all cells (CSV)", self._on_export),
                            ("3D view in brainrender (all slides)", self._on_render)]:
             b = QPushButton(text)
@@ -344,7 +346,7 @@ class FolderView(SlideView):
         if exp is not None and len(slides) > 1:
             help += (
                 f"This slide is part of {exp.name}: use the slide menu to switch. "
-                "Cell types, AP/pitch, region plots and brainrender are shared across "
+                "Cell types, AP/pitch, region / brain-division plots and brainrender are shared across "
                 "every slide (after the last section of slide N comes the first of N+1).\n"
             )
         help += (
@@ -476,13 +478,14 @@ class FolderView(SlideView):
             return
         # Drop the slide column for ranking helpers that expect CELL_COLUMNS.
         plot_cells = cells.drop(columns=["slide"], errors="ignore")
-        if kind == "hemisphere":
-            title = "Cells by region and hemisphere"
-        else:
-            title = "Cells by region"
+        titles = {"region": "Cells by region",
+                  "hemisphere": "Cells by region and hemisphere",
+                  "groups": "Cells by brain division"}
+        title = titles.get(kind, "Cells by region")
         if experiment_root(self.project) is not None:
             title += " (all slides)"
         RegionsPlot(plot_cells, title=title, kind=kind,
+                    atlas_name=self.project.data["atlas"],
                     parent=getattr(self.viewer.window, "_qt_window", None),
                     save_dir=self.project.root).exec()
 

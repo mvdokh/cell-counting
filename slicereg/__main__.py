@@ -14,7 +14,7 @@ import argparse
 
 
 def main(argv=None) -> None:
-    from .render import CELL_STYLES, STYLES, VIEWS
+    from .render import CELL_COLOR_BY, CELL_STYLES, STYLES, VIEWS
 
     parser = argparse.ArgumentParser(prog="slicereg", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -48,6 +48,11 @@ def main(argv=None) -> None:
                           help="only show these cell types")
     p_render.add_argument("--cell-style", choices=list(CELL_STYLES), default="spheres",
                           help="draw cells as spheres, a density heatmap, or both")
+    p_render.add_argument("--cell-color", choices=list(CELL_COLOR_BY), default="type",
+                          help="colour cell spheres by cell type or by atlas region")
+    p_render.add_argument("--cell-regions", nargs="+", metavar="NAME",
+                          help="when --cell-color region: only these regions get bright "
+                               "colours (Allen or Paxinos); all other cells are grey")
     p_render.add_argument("--heatmap-radius", type=float, default=200.0,
                           help="density heatmap smoothing radius in um")
     p_render.add_argument("--no-brain", action="store_true",
@@ -140,6 +145,7 @@ def main(argv=None) -> None:
                show_inset=not args.no_inset, radius=args.cell_size,
                show_title=not args.no_title,
                cell_style=args.cell_style, heatmap_radius=args.heatmap_radius,
+               cell_color_by=args.cell_color, cell_color_regions=args.cell_regions,
                all_slides=args.all_slides, this_slide=args.this_slide)
 
 

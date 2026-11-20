@@ -2,8 +2,10 @@ import numpy as np
 
 import pandas as pd
 
-from slicereg.render import (CELL_STYLES, VIEWS, cell_points_xyz, mirror_ml, parse_color,
-                             region_target, resolve_regions, split_color, split_region_text,
+from slicereg.render import (CELL_COLOR_BY, CELL_STYLES, REGION_OTHER_LABEL,
+                             REGION_OUTSIDE_COLOR, VIEWS, cell_points_xyz, mirror_ml,
+                             parse_color, region_color, region_point_groups, region_target,
+                             resolve_regions, split_color, split_region_text,
                              suggest_regions, view_camera)
 
 STRUCTURES = [
@@ -37,6 +39,34 @@ def test_cell_points_xyz_mirrors_ml_from_dataframe():
 
 def test_cell_styles_are_documented():
     assert CELL_STYLES == ("spheres", "heatmap", "both")
+    assert CELL_COLOR_BY == ("type", "region")
+
+
+def test_region_color_is_high_contrast():
+    from slicereg.render import REGION_COLORS
+
+    assert region_color("IRN", 0) == REGION_COLORS[0]
+    assert region_color("PARN", 1) == REGION_COLORS[1]
+    assert region_color("IRN", 0) != region_color("PARN", 1)
+    assert region_color("outside", 0) == REGION_OUTSIDE_COLOR
+    assert region_color("root", 99) == REGION_OUTSIDE_COLOR
+    assert region_color("XII", 0, highlight={"IRN", "PARN"}) == REGION_OUTSIDE_COLOR
+    assert region_color("IRN", 0, highlight={"IRN", "PARN"}) == REGION_COLORS[0]
+
+
+def test_region_point_groups_highlight_merges_others():
+    cells = pd.DataFrame({
+        "region_acronym": ["IRN", "IRN", "PARN", "XII", "outside"],
+        "ap_um": [0, 1, 2, 3, 4],
+        "dv_um": [0, 1, 2, 3, 4],
+        "ml_um": [0, 1, 2, 3, 4],
+    })
+    groups = region_point_groups(cells, highlight={"IRN", "PARN"})
+    assert [g[0] for g in groups] == ["IRN", "PARN", REGION_OTHER_LABEL]
+    other = groups[-1]
+    assert set(other[1]["region_acronym"]) == {"XII", "outside"}
+    assert other[2] == REGION_OUTSIDE_COLOR
+    assert groups[0][2] != groups[1][2] != REGION_OUTSIDE_COLOR
 
 
 def test_split_region_text():
